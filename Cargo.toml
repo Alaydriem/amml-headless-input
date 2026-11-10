@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["headless-input/core", "headless-input/mcp", "headless-input/amml"]
+members = ["src/core", "src/mcp", "src/amml"]
 
 [workspace.package]
 version = "26.62.0"
@@ -21,8 +21,8 @@ curia = "=0.2.2"
 hcl-rs = "=0.19.8"
 serde = { version = "1.0.229", features = ["derive"] }
 socket2 = "=0.6.5"
-headless-input-core = { path = "headless-input/core" }
-headless-input-mcp = { path = "headless-input/mcp" }
+headless-input-core = { path = "src/core" }
+headless-input-mcp = { path = "src/mcp" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

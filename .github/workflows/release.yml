@@ -35,4 +35,4 @@ jobs:
       namespace: alaydriem
       name: headless-input
       package_task: package
-      descriptor: headless-input/amml/descriptor.hcl
+      descriptor: src/amml/descriptor.hcl
