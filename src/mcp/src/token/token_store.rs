@@ -26,11 +26,6 @@ impl TokenStore {
     // the client name of the member token
     pub const MEMBER_CLIENT: &'static str = "headless-input-member";
 
-    // `<local_app_data>/amml/headless-input`, the folder of the shared token file
-    pub fn folder_in(local_app_data: &Path) -> PathBuf {
-        local_app_data.join("amml").join("headless-input")
-    }
-
     // reads `<folder>/mcp.tokens.json`. A missing or broken file gives no tokens; nothing is written here
     pub fn load(folder: &Path) -> TokenStore {
         let file = folder.join(Self::FILE_NAME);

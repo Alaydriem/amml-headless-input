@@ -285,9 +285,19 @@ fn instance_id_is_the_instance_folder_name() {
         mod_dir: PathBuf::from("D:\\loose\\headless-input"),
         config_dir: PathBuf::from("D:\\loose\\config"),
         data_dir: PathBuf::from("D:\\loose\\data"),
+        shared_data_dir: None,
     };
     let fallback = HeadlessRuntime::instance_id(&loose);
     assert!(fallback.as_str().starts_with("instance-"), "{fallback}");
+}
+
+#[test]
+fn the_token_file_lives_in_the_shared_data_folder_or_in_the_instance_without_one() {
+    let shared = HeadlessRuntime::new(&RuntimeDirs::dirs());
+    assert_eq!(shared.token_folder(), PathBuf::from(RuntimeDirs::SHARED_DATA_DIR));
+
+    let old_loader = HeadlessRuntime::new(&ModDirs { shared_data_dir: None, ..RuntimeDirs::dirs() });
+    assert_eq!(old_loader.token_folder(), PathBuf::from(RuntimeDirs::DATA_DIR));
 }
 
 #[test]

@@ -12,4 +12,4 @@ pub mod token;
 
 pub use hub::{HubNode, HubRole, InstanceId};
 pub use port::{HeadlessPort, PortError};
-pub use token::TokenStore;
+pub use token::{LegacyCopy, LegacyTokenFile, TokenStore};

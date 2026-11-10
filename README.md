@@ -52,7 +52,7 @@ Turn on `mcp.enabled` first. A client must then pair once, and you approve the p
 
 `/pair` can also answer `403` (denied or no answer), `409` (another request waits) or `400` (bad body).
 
-The token is saved in `%LOCALAPPDATA%\amml\headless-input\mcp.tokens.json`. All instances for your Windows user share it.
+The token is saved in `%LOCALAPPDATA%\amml\mod-data\@alaydriem\headless-input\mcp.tokens.json`. All instances for your Windows user share it. On the first start after an update, a token file in the old folder `%LOCALAPPDATA%\amml\headless-input\` is copied there once, so clients you paired before keep working. If the loader is too old to give the shared folder, the file stays in the data folder of the instance, and the instances do not share it.
 
 ### MCP tools
 

@@ -14,7 +14,7 @@ use headless_input_core::config::HeadlessConfig;
 use headless_input_core::player::{PlayerView, ScreenKind};
 use headless_input_core::run::{RunDefaults, RunStatus};
 use headless_input_core::structs::Capabilities;
-use headless_input_mcp::{InstanceId, TokenStore};
+use headless_input_mcp::{InstanceId, LegacyCopy, LegacyTokenFile};
 
 use crate::command::{CommandClient, GameCommandClient};
 use crate::game::{GameReader, HeadlessEntry};
@@ -49,6 +49,8 @@ pub struct HeadlessRuntime {
     config: Arc<RwLock<HeadlessConfig>>,
     config_dir: PathBuf,
     data_dir: PathBuf,
+    // `%LOCALAPPDATA%\amml\mod-data\@alaydriem\headless-input`, the same for every instance; `None` from a loader without it
+    shared_data_dir: Option<PathBuf>,
     instance: InstanceId,
     tokio: Mutex<Option<HeadlessTokio>>,
     hub: Mutex<Option<HubControl<NodeLauncher>>>,
@@ -86,6 +88,7 @@ impl HeadlessRuntime {
             config: Arc::new(RwLock::new(HeadlessConfig::default())),
             config_dir: dirs.config_dir.clone(),
             data_dir: dirs.data_dir.clone(),
+            shared_data_dir: dirs.shared_data_dir.clone(),
             instance: Self::instance_id(dirs),
             tokio: Mutex::new(None),
             hub: Mutex::new(None),
@@ -197,12 +200,10 @@ impl HeadlessRuntime {
                 return;
             }
         };
-        let launcher = NodeLauncher::new(
-            tokio.handle(),
-            self.local_port(LocalPort::WAIT),
-            self.instance.clone(),
-            &self.token_folder(),
-        );
+        let tokens = self.token_folder();
+        self.adopt_legacy_tokens(&tokens);
+        let launcher =
+            NodeLauncher::new(tokio.handle(), self.local_port(LocalPort::WAIT), self.instance.clone(), &tokens);
         let hub = HubControl::new(tokio.handle(), launcher);
         *self.hub.lock().unwrap_or_else(PoisonError::into_inner) = Some(hub);
         *self.tokio.lock().unwrap_or_else(PoisonError::into_inner) = Some(tokio);
@@ -427,11 +428,35 @@ impl HeadlessRuntime {
         }
     }
 
-    // the folder of the token file every instance shares: `%LOCALAPPDATA%\amml\headless-input`, or the mod data
-    // folder when LOCALAPPDATA is not set
-    fn token_folder(&self) -> PathBuf {
-        std::env::var_os("LOCALAPPDATA")
-            .map_or_else(|| self.data_dir.clone(), |folder| TokenStore::folder_in(Path::new(&folder)))
+    // the folder of the token file every instance shares: the shared data folder the loader gives the mod, or the mod
+    // data folder of this instance when the loader gives none
+    pub fn token_folder(&self) -> PathBuf {
+        self.shared_data_dir.clone().unwrap_or_else(|| self.data_dir.clone())
+    }
+
+    // copies the token file of older builds into `tokens` once, so the clients paired before keep their tokens
+    fn adopt_legacy_tokens(&self, tokens: &Path) {
+        if self.shared_data_dir.is_none() {
+            curia::warn!("shared data folder not available, MCP tokens stay in this instance", {
+                folder: tokens.display().to_string()
+            });
+            return;
+        }
+        let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+            return;
+        };
+        let legacy = LegacyTokenFile::folder_in(Path::new(&local_app_data));
+        match LegacyTokenFile::copy_once(&legacy, tokens) {
+            Ok(LegacyCopy::Copied) => curia::info!("MCP token file copied from the old folder", {
+                from: legacy.display().to_string(),
+                to: tokens.display().to_string()
+            }),
+            Ok(LegacyCopy::AlreadyPresent | LegacyCopy::NoLegacyFile) => {}
+            Err(error) => curia::warn!("MCP token file not copied from the old folder; clients pair again", {
+                from: legacy.display().to_string(),
+                error: error.to_string()
+            }),
+        }
     }
 
     // once a frame: the hub follows mcp.enabled and mcp.port. Never blocks: a hub control another thread holds is left
