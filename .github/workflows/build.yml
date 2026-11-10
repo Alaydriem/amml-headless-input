@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/headless-input
+
+defaults:
+  run:
+    working-directory: headless-input
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: headless-input
+
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: headless-input
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            headless-input/target
+          key: cargo-${{ hashFiles('headless-input/Cargo.lock', 'headless-input/rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-
+
+      - run: mise run check
+      - run: mise run test
+      - run: mise run package
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alaydriem-headless-input-${{ github.sha }}-windows-x64
+          path: headless-input/dist/@alaydriem/headless-input/

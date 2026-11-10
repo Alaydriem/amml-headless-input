@@ -1,0 +1,64 @@
+[env]
+_.file = ".env"
+
+[tasks.preflight]
+description = "Names a missing toolchain or tool before a build turns it into an obscure error"
+dir = "{{config_root}}"
+run = [
+  "rustc --version",
+  "cargo --version",
+  "cargo nextest --version",
+]
+
+[tasks.check]
+description = "Compiles, runs clippy with warnings denied and checks formatting"
+dir = "{{config_root}}"
+run = [
+  "cargo check --workspace --all-targets",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo fmt --all --check",
+]
+
+[tasks.test]
+description = "Every test through cargo nextest run"
+dir = "{{config_root}}"
+run = "cargo nextest run --workspace"
+
+[tasks.package]
+description = "Builds dist/@alaydriem/headless-input/ (alaydriem_headless_input.dll, amml.hcl), the release artifact"
+dir = "{{config_root}}"
+shell = "bash -c"
+run = '''
+set -e
+cargo build --release -p headless-input-amml
+rm -rf dist/alaydriem-headless-input dist/@alaydriem/headless-input
+mkdir -p dist/@alaydriem/headless-input
+cp target/release/alaydriem_headless_input.dll dist/@alaydriem/headless-input/alaydriem_headless_input.dll
+cp headless-input/amml/amml.hcl dist/@alaydriem/headless-input/amml.hcl
+cp headless-input/amml/icon.png dist/@alaydriem/headless-input/icon.png
+echo "built dist/@alaydriem/headless-input"
+'''
+
+[tasks.install]
+description = "Runs package, then copies dist/@alaydriem/headless-input into mods/amml/@alaydriem/headless-input of an AMML instance under %LOCALAPPDATA%/amml/instances (--instance, default 1.26.62.01). The mod's config/ stays. Close the game first: a running game locks the DLL"
+depends = ["package"]
+dir = "{{config_root}}"
+shell = "bash -c"
+usage = '''
+flag "--instance <name>" default="1.26.62.01" help="The instance folder under %LOCALAPPDATA%/amml/instances"
+'''
+run = '''
+set -e
+[ -n "$LOCALAPPDATA" ] || { echo "LOCALAPPDATA is not set; the instances live under %LOCALAPPDATA%/amml/instances"; exit 1; }
+instance="$LOCALAPPDATA/amml/instances/${usage_instance:-1.26.62.01}"
+[ -f "$instance/Minecraft.Windows.exe" ] || { echo "no instance at $instance"; exit 1; }
+target="$instance/mods/amml/@alaydriem/headless-input"
+mkdir -p "$target"
+cp -r dist/@alaydriem/headless-input/. "$target/"
+echo "installed dist/@alaydriem/headless-input -> $target"
+'''
+
+[tasks."mcp:connect"]
+description = "Pairs Claude Code with the headless-input MCP hub. It needs HEADLESS_MODS_DIR in .env (copy .env.example) and the MCP server on in the headless-input settings of a running game"
+dir = "{{config_root}}"
+run = "cargo run -q -j 4 -p headless-input-mcp --bin headless_pair"

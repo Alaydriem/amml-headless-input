@@ -1,0 +1,6 @@
+/target
+/mise.local.toml
+/dist
+/.superpowers/
+/.env
+/docs/
