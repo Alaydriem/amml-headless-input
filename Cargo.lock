@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "headless-input-amml"
-version = "26.62.0"
+version = "26.63.4"
 dependencies = [
  "amm-abi",
  "amm-client",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "headless-input-core"
-version = "26.62.0"
+version = "26.63.4"
 dependencies = [
  "hcl-rs",
  "serde",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "headless-input-mcp"
-version = "26.62.0"
+version = "26.63.4"
 dependencies = [
  "anyhow",
  "axum",
