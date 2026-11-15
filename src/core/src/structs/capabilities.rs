@@ -15,15 +15,25 @@ pub struct Capabilities {
     pub leave: bool,
     // sending a slash command to the server as the local player
     pub command: bool,
+    // opening a local world by its level id
+    pub join_world: bool,
 }
 
 impl Capabilities {
-    pub fn new(position: bool, rotation: bool, dimension: bool, join: bool, leave: bool, command: bool) -> Self {
-        Self { position, rotation, dimension, join, leave, command }
+    pub fn new(
+        position: bool,
+        rotation: bool,
+        dimension: bool,
+        join: bool,
+        leave: bool,
+        command: bool,
+        join_world: bool,
+    ) -> Self {
+        Self { position, rotation, dimension, join, leave, command, join_world }
     }
 
     pub fn all() -> Self {
-        Self::new(true, true, true, true, true, true)
+        Self::new(true, true, true, true, true, true, true)
     }
 
     // the first read or call `step` needs that is missing; None when the step can run. A repeat is checked through
@@ -36,7 +46,10 @@ impl Capabilities {
             }
             Step::WalkUntilDimension { .. } if !self.dimension => Some("the dimension"),
             Step::JoinServer { .. } if !self.join => Some("the server join"),
-            Step::JoinServer { .. } | Step::LeaveWorld { .. } if !self.leave => Some("the world leave"),
+            Step::JoinWorld { .. } if !self.join_world => Some("the world join"),
+            Step::JoinServer { .. } | Step::JoinWorld { .. } | Step::LeaveWorld { .. } if !self.leave => {
+                Some("the world leave")
+            }
             Step::Command { .. } if !self.command => Some("sending a command"),
             _ => None,
         }
@@ -48,7 +61,12 @@ impl Capabilities {
         match action {
             LiveAction::Turn { .. } | LiveAction::LookAt { .. } if !self.rotation => Some("the player rotation"),
             LiveAction::JoinServer { .. } if !self.join => Some("the server join"),
-            LiveAction::JoinServer { .. } | LiveAction::LeaveWorld { .. } if !self.leave => Some("the world leave"),
+            LiveAction::JoinWorld { .. } if !self.join_world => Some("the world join"),
+            LiveAction::JoinServer { .. } | LiveAction::JoinWorld { .. } | LiveAction::LeaveWorld { .. }
+                if !self.leave =>
+            {
+                Some("the world leave")
+            }
             _ => None,
         }
     }

@@ -54,6 +54,8 @@ fn amml_hcl_lists_exactly_the_hook_and_wanted_entries() {
         "PacketSender.send",
         "CommandRequestPacket.mCommand",
         "CommandRequestPacket.size",
+        "LocalWorldStarter.startLocalWorld",
+        "WorldSystem.mLocalWorldStarter",
     ];
     expected.sort_unstable();
     assert_eq!(listed, expected);

@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use alaydriem_headless_input::join::JoinClient;
-use headless_input_core::structs::JoinTarget;
+use headless_input_core::structs::{JoinTarget, WorldTarget};
 
 // a game client stand-in: the test sets the screen and the flags, and the fake records each join and leave call
 pub struct FakeJoinClient {
@@ -23,6 +23,10 @@ pub struct FakeJoinClient {
     events: RefCell<Vec<&'static str>>,
     // the result code the game's callback left, until it is taken or cleared
     result: Cell<Option<i32>>,
+    // the answers of the next world join calls; an empty queue answers Some(0)
+    world_answers: RefCell<VecDeque<Option<i32>>>,
+    // the level id of each world join call
+    worlds: RefCell<Vec<String>>,
 }
 
 impl FakeJoinClient {
@@ -39,6 +43,8 @@ impl FakeJoinClient {
             tabs: Cell::new(0),
             events: RefCell::new(Vec::new()),
             result: Cell::new(None),
+            world_answers: RefCell::new(VecDeque::new()),
+            worlds: RefCell::new(Vec::new()),
         }
     }
 
@@ -89,6 +95,14 @@ impl FakeJoinClient {
         self.result.set(Some(code));
     }
 
+    pub fn answer_world_next(&self, answer: Option<i32>) {
+        self.world_answers.borrow_mut().push_back(answer);
+    }
+
+    pub fn worlds(&self) -> Vec<String> {
+        self.worlds.borrow().clone()
+    }
+
     pub fn events(&self) -> Vec<&'static str> {
         self.events.borrow().clone()
     }
@@ -129,5 +143,11 @@ impl JoinClient for FakeJoinClient {
         self.events.borrow_mut().push("join");
         self.joins.borrow_mut().push((target.address.to_string(), target.port, target.host.clone()));
         self.answers.borrow_mut().pop_front().unwrap_or(true)
+    }
+
+    fn join_world(&self, target: &WorldTarget) -> Option<i32> {
+        self.events.borrow_mut().push("world");
+        self.worlds.borrow_mut().push(target.level_id.clone());
+        self.world_answers.borrow_mut().pop_front().unwrap_or(Some(0))
     }
 }

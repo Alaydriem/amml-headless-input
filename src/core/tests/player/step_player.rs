@@ -5,7 +5,7 @@ use headless_input_core::structs::Capabilities;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use headless_input_core::structs::JoinTarget;
+use headless_input_core::structs::{JoinRequest, JoinTarget, WorldTarget};
 
 fn player(steps: Vec<Step>) -> StepPlayer {
     StepPlayer::new(ControlFile { name: "test".to_string(), steps, total_ticks: None })
@@ -66,6 +66,7 @@ fn jump_presses_for_one_tick_by_default() {
         &RunDefaults::default(),
         &Capabilities::all(),
         |_| Some(Ipv4Addr::LOCALHOST),
+        |world| Some(world.to_owned()),
     )
     .expect("the file loads");
     let mut player = StepPlayer::new(file);
@@ -274,8 +275,11 @@ fn join_waits_for_the_world_and_leave_waits_for_the_title() {
         Step::LeaveWorld { timeout: Ticks(1200) },
     ]);
     let mut view = PlayerView { screen: ScreenKind::Title, ..still() };
-    let target =
-        Some(Arc::new(JoinTarget { host: "127.0.0.1".to_string(), address: Ipv4Addr::LOCALHOST, port: 19132 }));
+    let target = Some(Arc::new(JoinRequest::Server(JoinTarget {
+        host: "127.0.0.1".to_string(),
+        address: Ipv4Addr::LOCALHOST,
+        port: 19132,
+    })));
     assert_eq!(player.tick(&view).join, target);
     view.screen = ScreenKind::Loading;
     assert_eq!(player.tick(&view).join, target);
@@ -299,11 +303,11 @@ fn a_join_that_starts_in_a_world_leaves_first_then_joins() {
         },
         Step::Wait { ticks: Ticks(5) },
     ]);
-    let target = Some(Arc::new(JoinTarget {
+    let target = Some(Arc::new(JoinRequest::Server(JoinTarget {
         host: "play.example.net".to_string(),
         address: Ipv4Addr::new(10, 0, 0, 2),
         port: 19133,
-    }));
+    })));
     let mut view = still();
     for _ in 0..2 {
         let frame = player.tick(&view);
@@ -385,4 +389,68 @@ fn leave_world_from_a_world_under_a_menu_leaves() {
     view.screen = ScreenKind::Title;
     assert!(!player.tick(&view).leave);
     assert_eq!(player.outcome(), Some(StepOutcome::Done));
+}
+
+fn join_world_player() -> StepPlayer {
+    player(vec![
+        Step::JoinWorld { world: "Test Flat".to_string(), level_id: "id1".to_string(), timeout: Ticks(1200) },
+        Step::Wait { ticks: Ticks(5) },
+    ])
+}
+
+fn world_request() -> Option<Arc<JoinRequest>> {
+    Some(Arc::new(JoinRequest::World(WorldTarget { name: "Test Flat".to_string(), level_id: "id1".to_string() })))
+}
+
+#[test]
+fn join_world_from_title_asks_until_in_world() {
+    let mut player = join_world_player();
+    let mut view = PlayerView { screen: ScreenKind::Title, ..still() };
+    assert_eq!(player.tick(&view).join, world_request());
+    view.screen = ScreenKind::Loading;
+    assert_eq!(player.tick(&view).join, world_request());
+    assert_eq!(player.current().step, 0);
+    view.screen = ScreenKind::InWorld;
+    assert_eq!(player.tick(&view).join, None);
+    assert_eq!(player.current().step, 1);
+}
+
+#[test]
+fn join_world_in_a_world_leaves_first() {
+    let mut player = join_world_player();
+    let mut view = still();
+    let frame = player.tick(&view);
+    assert!(frame.leave);
+    assert_eq!(frame.join, None);
+    view.screen = ScreenKind::Title;
+    let frame = player.tick(&view);
+    assert!(!frame.leave);
+    assert_eq!(frame.join, world_request());
+}
+
+#[test]
+fn join_world_fails_when_the_menus_come_back() {
+    let mut player = join_world_player();
+    let mut view = PlayerView { screen: ScreenKind::Title, ..still() };
+    player.tick(&view);
+    view.screen = ScreenKind::Loading;
+    player.tick(&view);
+    view.screen = ScreenKind::Title;
+    player.tick(&view);
+    match player.outcome() {
+        Some(StepOutcome::StepFailed { step, why, .. }) => {
+            assert_eq!(step, 0);
+            assert_eq!(why, "the join failed: the game returned to the menus");
+        }
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn join_world_into_the_world_it_is_in_leaves_and_joins_again() {
+    let mut player = join_world_player();
+    let frame = player.tick(&still());
+    assert!(frame.leave);
+    assert_eq!(player.current().step, 0);
+    assert_eq!(player.outcome(), None);
 }

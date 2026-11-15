@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 
 use headless_input_core::control::{
-    ControlFile, ControlLoader, DimensionName, InputKey, PointerAction, Step, StepConverter, Ticks,
+    ControlFile, ControlLoader, DimensionName, InputKey, PointerAction, Step, StepConverter, TapKey, Ticks,
 };
 use headless_input_core::run::RunDefaults;
 use headless_input_core::structs::Capabilities;
@@ -63,11 +63,23 @@ step "wait" {
 "#;
 
 fn load(text: &str) -> Result<ControlFile, headless_input_core::errors::ControlError> {
-    ControlLoader::load(text, &RunDefaults::default(), &Capabilities::all(), |host| host.parse().ok())
+    ControlLoader::load(
+        text,
+        &RunDefaults::default(),
+        &Capabilities::all(),
+        |host| host.parse().ok(),
+        |world| Some(world.to_owned()),
+    )
 }
 
 fn load_with(text: &str, capabilities: Capabilities) -> Result<ControlFile, headless_input_core::errors::ControlError> {
-    ControlLoader::load(text, &RunDefaults::default(), &capabilities, |host| host.parse().ok())
+    ControlLoader::load(
+        text,
+        &RunDefaults::default(),
+        &capabilities,
+        |host| host.parse().ok(),
+        |world| Some(world.to_owned()),
+    )
 }
 
 fn refusal(text: &str) -> headless_input_core::errors::ControlError {
@@ -172,6 +184,19 @@ fn a_bad_value_names_the_line_of_its_step() {
 }
 
 #[test]
+fn press_takes_a_key_name() {
+    let file = load("step \"press\" {\n key = \"Esc\"\n}\n").unwrap();
+    assert_eq!(file.steps[0], Step::Press { key: TapKey::parse("Escape").unwrap() });
+}
+
+#[test]
+fn press_refuses_a_missing_unknown_or_owned_key() {
+    assert!(refusal("step \"press\" {}\n").to_string().contains("key is required"));
+    assert!(refusal("step \"press\" {\n key = \"Banana\"\n}\n").to_string().contains("unknown key \"Banana\""));
+    assert!(refusal("step \"press\" {\n key = \"W\"\n}\n").to_string().contains("driven by the move tool"));
+}
+
+#[test]
 fn hotbar_slot_out_of_range_is_refused() {
     for slot in [0, 10] {
         let error = refusal(&format!("step \"hotbar\" {{\n slot = {slot}\n}}\n"));
@@ -237,10 +262,11 @@ step \"walk_to\" {
  z = 2
 }
 ";
-    let error = load_with(text, Capabilities::new(false, true, true, true, true, true)).expect_err("no position read");
+    let error =
+        load_with(text, Capabilities::new(false, true, true, true, true, true, true)).expect_err("no position read");
     assert_eq!(error.line, Some(2));
     assert!(error.reason.contains("walk_to") && error.reason.contains("position"), "{}", error.reason);
-    assert!(load_with(text, Capabilities::new(true, true, true, true, true, true)).is_ok());
+    assert!(load_with(text, Capabilities::new(true, true, true, true, true, true, true)).is_ok());
 }
 
 #[test]
@@ -263,8 +289,8 @@ fn each_goal_step_is_refused_without_the_read_it_needs() {
 ";
     let portal = "step \"walk_until_dimension\" {}
 ";
-    let no_rotation = Capabilities::new(true, false, true, true, true, true);
-    let no_dimension = Capabilities::new(true, true, false, true, true, true);
+    let no_rotation = Capabilities::new(true, false, true, true, true, true, true);
+    let no_dimension = Capabilities::new(true, true, false, true, true, true, true);
     for text in [walk, turn, look] {
         let error = load_with(text, no_rotation).expect_err("no rotation read");
         assert!(error.reason.contains("rotation"), "{}", error.reason);
@@ -279,7 +305,7 @@ fn each_goal_step_is_refused_without_the_read_it_needs() {
 }
 step \"jump\" {}
 ";
-    assert!(load_with(time_only, Capabilities::new(false, false, false, false, false, false)).is_ok());
+    assert!(load_with(time_only, Capabilities::new(false, false, false, false, false, false, false)).is_ok());
 }
 
 #[test]
@@ -294,7 +320,8 @@ fn a_goal_step_inside_a_repeat_is_refused_on_its_own_line() {
  }
 }
 ";
-    let error = load_with(text, Capabilities::new(true, false, true, true, true, true)).expect_err("no rotation read");
+    let error =
+        load_with(text, Capabilities::new(true, false, true, true, true, true, true)).expect_err("no rotation read");
     assert_eq!(error.line, Some(4));
 }
 
@@ -302,7 +329,7 @@ fn a_goal_step_inside_a_repeat_is_refused_on_its_own_line() {
 fn a_join_host_keeps_its_name_and_takes_the_resolved_address() {
     let text = "step \"join_server\" {\n address = \"play.example.net\"\n}\n";
     let resolve = |host: &str| (host == "play.example.net").then_some(Ipv4Addr::new(10, 0, 0, 2));
-    let file = ControlLoader::load(text, &RunDefaults::default(), &Capabilities::all(), resolve).unwrap();
+    let file = ControlLoader::load(text, &RunDefaults::default(), &Capabilities::all(), resolve, |_| None).unwrap();
     match &file.steps[0] {
         Step::JoinServer { host, address, port, .. } => {
             assert_eq!(host, "play.example.net");
@@ -311,7 +338,7 @@ fn a_join_host_keeps_its_name_and_takes_the_resolved_address() {
         }
         other => panic!("expected a join, got {other:?}"),
     }
-    let error = ControlLoader::load(text, &RunDefaults::default(), &Capabilities::all(), |_| None)
+    let error = ControlLoader::load(text, &RunDefaults::default(), &Capabilities::all(), |_| None, |_| None)
         .expect_err("a host with no address is refused");
     assert_eq!(error.line, Some(1));
     assert!(error.reason.contains("play.example.net"), "{}", error.reason);
@@ -326,8 +353,8 @@ fn join_and_leave_steps_are_refused_without_their_game_calls() {
 ";
     let leave = "step \"leave_world\" {}
 ";
-    let no_join = Capabilities::new(true, true, true, false, true, true);
-    let no_leave = Capabilities::new(true, true, true, true, false, true);
+    let no_join = Capabilities::new(true, true, true, false, true, true, true);
+    let no_leave = Capabilities::new(true, true, true, true, false, true, true);
     let error = load_with(join, no_join).expect_err("no join call");
     assert!(error.reason.contains("needs the server join"), "{}", error.reason);
     // a join that starts in a world leaves it first
@@ -336,7 +363,7 @@ fn join_and_leave_steps_are_refused_without_their_game_calls() {
     let error = load_with(leave, no_leave).expect_err("no leave call");
     assert!(error.reason.contains("leave_world") && error.reason.contains("needs the world leave"), "{}", error.reason);
     assert!(load_with(leave, no_join).is_ok());
-    assert!(load_with(join, Capabilities::new(false, false, false, true, true, true)).is_ok());
+    assert!(load_with(join, Capabilities::new(false, false, false, true, true, true, true)).is_ok());
 }
 
 fn command_file(attributes: &str) -> String {
@@ -376,10 +403,10 @@ fn a_command_step_with_a_bad_text_is_refused_on_its_line() {
 #[test]
 fn a_command_step_is_refused_without_the_command_capability() {
     let text = command_file(" text = \"/tp @s ~ ~ ~\"\n");
-    let no_command = Capabilities::new(true, true, true, true, true, false);
+    let no_command = Capabilities::new(true, true, true, true, true, false, true);
     let error = load_with(&text, no_command).expect_err("no command call");
     assert!(error.reason.contains("needs sending a command"), "{}", error.reason);
-    assert!(load_with(&text, Capabilities::new(false, false, false, false, false, true)).is_ok());
+    assert!(load_with(&text, Capabilities::new(false, false, false, false, false, true, true)).is_ok());
 }
 
 #[test]
@@ -398,4 +425,48 @@ fn every_example_file_loads() {
         found += 1;
     }
     assert!(found >= 5, "expected at least 5 example files, found {found}");
+}
+
+fn load_worlds(
+    text: &str,
+    find: impl Fn(&str) -> Option<String>,
+) -> Result<ControlFile, headless_input_core::errors::ControlError> {
+    ControlLoader::load(text, &RunDefaults::default(), &Capabilities::all(), |host| host.parse().ok(), find)
+}
+
+#[test]
+fn join_world_stores_the_resolved_level_id() {
+    let text = "step \"join_world\" {\n  world = \"Test Flat\"\n}\n";
+    let file = load_worlds(text, |world| (world == "Test Flat").then(|| "id1".to_string())).unwrap();
+    assert_eq!(
+        file.steps[0],
+        Step::JoinWorld {
+            world: "Test Flat".to_string(),
+            level_id: "id1".to_string(),
+            timeout: RunDefaults::default().goal_timeout
+        }
+    );
+}
+
+#[test]
+fn join_world_without_world_is_refused_with_its_line() {
+    let text = "name = \"x\"\n\nstep \"join_world\" {}\n";
+    let error = load_worlds(text, |_| Some("id1".to_string())).expect_err("a world is needed");
+    assert_eq!(error.line, Some(3));
+    assert!(error.reason.contains("world is required"), "{}", error.reason);
+}
+
+#[test]
+fn unknown_world_is_refused_with_its_line() {
+    let text = "name = \"x\"\n\nstep \"join_world\" {\n  world = \"Nope\"\n}\n";
+    let error = load_worlds(text, |_| None).expect_err("no such world");
+    assert_eq!(error.line, Some(3));
+    assert!(error.reason.contains("no world named \"Nope\""), "{}", error.reason);
+}
+
+#[test]
+fn join_world_rejects_unknown_attribute() {
+    let text = "step \"join_world\" {\n  address = \"x\"\n}\n";
+    let error = load_worlds(text, |_| Some("id1".to_string())).expect_err("address is not a join_world attribute");
+    assert!(error.reason.contains("address"), "{}", error.reason);
 }

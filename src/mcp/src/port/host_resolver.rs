@@ -98,19 +98,36 @@ impl HostResolver {
         text: &str,
         defaults: &RunDefaults,
         capabilities: &Capabilities,
+        find_world: impl Fn(&str) -> Option<String>,
     ) -> Result<ControlFile, PortError> {
         let failed = RefCell::new(None);
-        let loaded = ControlLoader::load(text, defaults, capabilities, |host| self.lookup(host, &failed));
+        let loaded = ControlLoader::load(text, defaults, capabilities, |host| self.lookup(host, &failed), find_world);
         loaded.map_err(|error| match failed.into_inner() {
             Some(host) => PortError::Unresolved { host },
             None => PortError::Bad(error.to_string()),
         })
     }
 
-    // the live action of a tool call, resolving the join host if it has one
-    pub fn live(&self, action: &LiveActionDto) -> Result<LiveAction, PortError> {
+    // the hub's own check of a control file: it takes any world text, because only the instance that runs the file
+    // knows its worlds
+    pub fn check_control(
+        &self,
+        text: &str,
+        defaults: &RunDefaults,
+        capabilities: &Capabilities,
+    ) -> Result<(), PortError> {
+        self.load_control(text, defaults, capabilities, |world| Some(world.to_owned())).map(|_| ())
+    }
+
+    // the live action of a tool call, resolving the join host if it has one; `find_world` gives the level id of a
+    // world text, or None when no world has that name
+    pub fn live(
+        &self,
+        action: &LiveActionDto,
+        find_world: impl Fn(&str) -> Option<String>,
+    ) -> Result<LiveAction, PortError> {
         let failed = RefCell::new(None);
-        let built = action.action(|host| self.lookup(host, &failed));
+        let built = action.action(|host| self.lookup(host, &failed), find_world);
         match (built, failed.into_inner()) {
             (Err(_), Some(host)) => Err(PortError::Unresolved { host }),
             (built, _) => built,

@@ -43,9 +43,13 @@ impl RunHarness {
     }
 
     pub fn file(text: &str) -> ControlFile {
-        ControlLoader::load(text, &RunDefaults::default(), &Capabilities::all(), |_| {
-            Some(std::net::Ipv4Addr::LOCALHOST)
-        })
+        ControlLoader::load(
+            text,
+            &RunDefaults::default(),
+            &Capabilities::all(),
+            |_| Some(std::net::Ipv4Addr::LOCALHOST),
+            |world| Some(world.to_owned()),
+        )
         .unwrap()
     }
 

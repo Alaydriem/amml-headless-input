@@ -13,7 +13,7 @@ use amml_sdk::{HookHandle, ModDirs, ModRuntime};
 use headless_input_core::config::HeadlessConfig;
 use headless_input_core::player::{PlayerView, ScreenKind};
 use headless_input_core::run::{RunDefaults, RunStatus};
-use headless_input_core::structs::Capabilities;
+use headless_input_core::structs::{Capabilities, ScreenshotSlot};
 use headless_input_mcp::{InstanceId, LegacyCopy, LegacyTokenFile};
 
 use crate::command::{CommandClient, GameCommandClient};
@@ -21,9 +21,9 @@ use crate::game::{GameReader, HeadlessEntry};
 use crate::join::{GameJoinClient, JoinClient};
 use crate::services::{
     CommandInbox, HeadlessLink, HeadlessTokio, HubControl, LastView, LocalPort, NodeLauncher, PairingPrompt, RunDriver,
-    TickWatch,
+    ScreenshotDesk, ScreenshotFolder, TickWatch, WorldFolderReader,
 };
-use crate::traits::ManagerPort;
+use crate::traits::{ManagerPort, ScreenshotPort};
 use crate::types::{FrameView, LinkState};
 
 // what the hooks share: the settings, the game client and entries, the capabilities they give, the manager link
@@ -33,7 +33,7 @@ use crate::types::{FrameView, LinkState};
 // driver one tick for each game tick of the captured client that has a local player. A frame in a world whose player read failed gives the driver the last good view of that world
 // (`last_view`); `tick_watch` logs whether the local tick is ever seen. The MCP hub reaches the game only through the
 // local port: its commands wait in `inbox` for the next frame, and it reads `status`, which each frame writes. Lock
-// order: `link`, then `driver`
+// order: `link`, then `driver`, then the screenshot desk. The port thread takes only the desk
 pub struct HeadlessRuntime {
     client: AtomicUsize,
     entries: RwLock<Option<GameEntries>>,
@@ -49,12 +49,15 @@ pub struct HeadlessRuntime {
     config: Arc<RwLock<HeadlessConfig>>,
     config_dir: PathBuf,
     data_dir: PathBuf,
+    // the AMML instance folder, the parent of the `mods` folder
+    game_dir: PathBuf,
     // `%LOCALAPPDATA%\amml\mod-data\@alaydriem\headless-input`, the same for every instance; `None` from a loader without it
     shared_data_dir: Option<PathBuf>,
     instance: InstanceId,
     tokio: Mutex<Option<HeadlessTokio>>,
     hub: Mutex<Option<HubControl<NodeLauncher>>>,
-    link_state: AtomicU8,
+    link_state: Arc<AtomicU8>,
+    desk: Arc<ScreenshotDesk>,
     link: Mutex<Option<HeadlessLink>>,
     hooks: Mutex<Vec<HookHandle>>,
 }
@@ -77,7 +80,7 @@ impl HeadlessRuntime {
         Self {
             client: AtomicUsize::new(0),
             entries: RwLock::new(None),
-            capabilities: Arc::new(RwLock::new(Capabilities::new(false, false, false, false, false, false))),
+            capabilities: Arc::new(RwLock::new(Capabilities::new(false, false, false, false, false, false, false))),
             driver: Mutex::new(driver),
             inbox: CommandInbox::new_shared(),
             status: Arc::new(Mutex::new(status)),
@@ -88,11 +91,13 @@ impl HeadlessRuntime {
             config: Arc::new(RwLock::new(HeadlessConfig::default())),
             config_dir: dirs.config_dir.clone(),
             data_dir: dirs.data_dir.clone(),
+            game_dir: Self::game_dir(dirs),
             shared_data_dir: dirs.shared_data_dir.clone(),
             instance: Self::instance_id(dirs),
             tokio: Mutex::new(None),
             hub: Mutex::new(None),
-            link_state: AtomicU8::new(LinkState::Disabled.to_u8()),
+            link_state: Arc::new(AtomicU8::new(LinkState::Disabled.to_u8())),
+            desk: ScreenshotDesk::new_shared(ScreenshotSlot::TIMEOUT),
             link: Mutex::new(None),
             hooks: Mutex::new(Vec::with_capacity(Self::HOOK_CAPACITY)),
         }
@@ -110,14 +115,25 @@ impl HeadlessRuntime {
     // the AMML instance folder name, the parent of the `mods` folder the mod sits in; `instance-<pid>` when the mod
     // folder is not inside one
     pub fn instance_id(dirs: &ModDirs) -> InstanceId {
-        let name = dirs
-            .mod_dir
-            .ancestors()
-            .find(|folder| folder.file_name().is_some_and(|name| name.eq_ignore_ascii_case(Self::MODS_FOLDER)))
-            .and_then(Path::parent)
+        let name = Self::instance_dir(dirs)
+            .as_deref()
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned());
         InstanceId::new(name.unwrap_or_else(|| format!("instance-{}", std::process::id())))
+    }
+
+    // the parent of the `mods` folder the mod sits in
+    fn instance_dir(dirs: &ModDirs) -> Option<PathBuf> {
+        dirs.mod_dir
+            .ancestors()
+            .find(|folder| folder.file_name().is_some_and(|name| name.eq_ignore_ascii_case(Self::MODS_FOLDER)))
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+    }
+
+    // the game folder; the mod folder itself when it is not inside an instance
+    fn game_dir(dirs: &ModDirs) -> PathBuf {
+        Self::instance_dir(dirs).unwrap_or_else(|| dirs.mod_dir.clone())
     }
 
     pub fn link_state(&self) -> LinkState {
@@ -166,6 +182,13 @@ impl HeadlessRuntime {
             Arc::clone(&self.config),
             Arc::clone(&self.prompt),
             self.data_dir.clone(),
+            WorldFolderReader::new(
+                self.game_dir.clone(),
+                PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()),
+            ),
+            Arc::clone(&self.desk),
+            ScreenshotFolder::new(self.data_dir.join(LocalPort::SCREENSHOT_FOLDER)),
+            Arc::clone(&self.link_state),
             wait,
         ))
     }
@@ -184,6 +207,7 @@ impl HeadlessRuntime {
     // defaults, so the mod works without a manager, and the next tick reaches the manager
     pub fn enable_link(&self) {
         self.inbox.open();
+        self.desk.open();
         self.prompt.reopen();
         self.pairing_seen.store(false, Ordering::SeqCst);
         self.apply_config(HeadlessConfig::default());
@@ -244,10 +268,14 @@ impl HeadlessRuntime {
             "a hook body of @alaydriem/headless-input panicked; the run ended and the mod stays idle until it is enabled again"
         );
         self.inbox.close();
+        self.desk.close();
         self.prompt.cancel();
         let released = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let slot = self.link.lock().unwrap_or_else(PoisonError::into_inner);
             self.driver().end_for(slot.as_ref(), RunDriver::PANICKED, &self.status);
+            if let Some(link) = slot.as_ref() {
+                self.desk.pump(link);
+            }
         }));
         if released.is_err() {
             curia::error!("the input could not be released after the panic; disable the mod in the manager panel");
@@ -382,6 +410,7 @@ impl HeadlessRuntime {
             return;
         }
         if let Some(mut link) = link {
+            self.desk.set_supported(link.supports_screenshots());
             self.apply_config(link.config().clone());
             // the value at attach is the starting point: it allows nothing, and is turned off
             self.pairing_seen.store(link.config().mcp_allow_pairing, Ordering::SeqCst);
@@ -398,10 +427,14 @@ impl HeadlessRuntime {
     pub fn detach(&self) {
         self.link_state.store(LinkState::Disabled.to_u8(), Ordering::SeqCst);
         self.inbox.close();
+        self.desk.close();
         self.prompt.cancel();
         let link = {
             let mut slot = self.link.lock().unwrap_or_else(PoisonError::into_inner);
             self.release_then(slot.as_ref(), || {});
+            if let Some(link) = slot.as_ref() {
+                self.desk.pump(link);
+            }
             slot.take()
         };
         self.stop_services();
@@ -511,6 +544,7 @@ impl HeadlessRuntime {
         let mut input_taken = false;
         let mut disabled = false;
         for event in link.drain() {
+            self.desk.on_event(event);
             match event {
                 ModEvent::SettingsChanged { .. } => changed = true,
                 ModEvent::FakeKeysReleased => released = true,
@@ -531,6 +565,7 @@ impl HeadlessRuntime {
             let config = link.reload().clone();
             self.apply_config(config);
         }
+        self.desk.pump(&*link);
         self.follow_pairing_switch(link);
     }
 

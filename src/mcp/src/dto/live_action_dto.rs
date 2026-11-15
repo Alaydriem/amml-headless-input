@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use headless_input_core::control::{InputKey, PointerAction, Ticks};
+use headless_input_core::control::{InputKey, PointerAction, TapKey, Ticks};
 use headless_input_core::player::KeySet;
 use headless_input_core::run::LiveAction;
 use serde::{Deserialize, Serialize};
@@ -34,12 +34,19 @@ pub enum LiveActionDto {
     Hotbar {
         slot: i64,
     },
+    Press {
+        key: String,
+    },
     Scroll {
         steps: i32,
     },
     JoinServer {
         address: String,
         port: u16,
+        timeout: Option<String>,
+    },
+    JoinWorld {
+        world: String,
         timeout: Option<String>,
     },
     LeaveWorld {
@@ -51,7 +58,12 @@ pub enum LiveActionDto {
 impl LiveActionDto {
     // the action, or a `Bad` error naming the value that is wrong
     // `resolve` gives the IPv4 address of a join_server host, or None when it has none
-    pub fn action(&self, resolve: impl Fn(&str) -> Option<Ipv4Addr>) -> Result<LiveAction, PortError> {
+    // `find_world` gives the level id of a join_world world text, or None when no world has that name
+    pub fn action(
+        &self,
+        resolve: impl Fn(&str) -> Option<Ipv4Addr>,
+        find_world: impl Fn(&str) -> Option<String>,
+    ) -> Result<LiveAction, PortError> {
         Ok(match self {
             Self::Hold { keys, for_time } => {
                 if keys.is_empty() {
@@ -84,6 +96,9 @@ impl LiveActionDto {
                 Ok(slot @ 1..=9) => LiveAction::Hotbar { slot },
                 _ => return Err(PortError::Bad("slot must be from 1 to 9".to_owned())),
             },
+            Self::Press { key } => {
+                LiveAction::Press { key: TapKey::parse(key).map_err(|error| PortError::Bad(error.to_string()))? }
+            }
             Self::Scroll { steps } => LiveAction::Scroll { steps: *steps },
             Self::JoinServer { address, port, timeout } => {
                 if address.trim().is_empty() {
@@ -96,6 +111,17 @@ impl LiveActionDto {
                     host: address.trim().to_owned(),
                     address: resolved,
                     port: *port,
+                    timeout: Self::optional(timeout.as_deref(), "timeout")?,
+                }
+            }
+            Self::JoinWorld { world, timeout } => {
+                if world.trim().is_empty() {
+                    return Err(PortError::Bad("world is required".to_owned()));
+                }
+                let level_id = find_world(world).ok_or_else(|| PortError::UnknownWorld { world: world.clone() })?;
+                LiveAction::JoinWorld {
+                    world: world.clone(),
+                    level_id,
                     timeout: Self::optional(timeout.as_deref(), "timeout")?,
                 }
             }

@@ -61,3 +61,13 @@ fn the_ninth_concurrent_lookup_is_unresolved_at_once() {
     let free = other.bounded("other.example", std::time::Duration::from_secs(5), || Ok(Ipv4Addr::new(9, 9, 9, 9)));
     assert_eq!(free, Ok(Ipv4Addr::new(9, 9, 9, 9)));
 }
+
+#[test]
+fn hub_check_accepts_any_world_text() {
+    use headless_input_core::run::RunDefaults;
+    use headless_input_core::structs::Capabilities;
+
+    let file = "name = \"j\"\n\nstep \"join_world\" {\n  world = \"in no catalog\"\n}\n";
+    let checked = HostResolver::new().check_control(file, &RunDefaults::default(), &Capabilities::all());
+    assert_eq!(checked, Ok(()));
+}

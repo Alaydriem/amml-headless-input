@@ -20,6 +20,8 @@ pub struct StatusDto {
     pub yaw: f32,
     pub pitch: f32,
     pub dimension: Option<i32>,
+    // in_world, title, loading, or the name of the screen the game shows, such as inventory_screen
+    pub screen: String,
 }
 
 impl From<&RunStatus> for StatusDto {
@@ -42,6 +44,7 @@ impl From<&RunStatus> for StatusDto {
             yaw: status.yaw,
             pitch: status.pitch,
             dimension: status.dimension,
+            screen: status.screen.clone(),
         }
     }
 }

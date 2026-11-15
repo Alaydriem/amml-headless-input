@@ -1,11 +1,10 @@
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use super::join_phase::JoinPhase;
 use super::step_progress::StepProgress;
 use super::{InputFrame, PlayerView, PointerOp, ScreenKind, TurnPlan};
 use crate::control::{InputKey, Step};
-use crate::structs::JoinTarget;
+use crate::structs::{JoinRequest, JoinTarget, WorldTarget};
 
 // The state of the step the player is running: the ticks it has run and what it noted on its first tick.
 #[derive(Debug, Clone)]
@@ -73,6 +72,7 @@ impl StepRun {
                 }
             }
             Step::Hotbar { slot } => self.once(frame, |frame| frame.hotbar = Some(*slot)),
+            Step::Press { key } => self.once(frame, |frame| frame.tap = Some(*key)),
             Step::Scroll { steps } => self.once(frame, |frame| {
                 frame.pointer.push(PointerOp::Scroll(*steps));
             }),
@@ -98,7 +98,12 @@ impl StepRun {
                     StepProgress::Running
                 }
             }
-            Step::JoinServer { host, address, port, .. } => self.join_server(host, *address, *port, view, frame),
+            Step::JoinServer { host, address, port, .. } => self.join(view, frame, || {
+                JoinRequest::Server(JoinTarget { host: host.clone(), address: *address, port: *port })
+            }),
+            Step::JoinWorld { world, level_id, .. } => self.join(view, frame, || {
+                JoinRequest::World(WorldTarget { name: world.clone(), level_id: level_id.clone() })
+            }),
             Step::LeaveWorld { .. } => {
                 if view.screen == ScreenKind::Title {
                     StepProgress::Ended
@@ -119,15 +124,8 @@ impl StepRun {
     // another screen
     // Loading or any other screen after the join was asked counts as the join under way; the title after that is a
     // join the game refused or dropped
-    fn join_server(
-        &mut self,
-        host: &str,
-        address: Ipv4Addr,
-        port: u16,
-        view: &PlayerView,
-        frame: &mut InputFrame,
-    ) -> StepProgress {
-        let joining = || JoinPhase::Joining(Arc::new(JoinTarget { host: host.to_string(), address, port }));
+    fn join(&mut self, view: &PlayerView, frame: &mut InputFrame, request: impl Fn() -> JoinRequest) -> StepProgress {
+        let joining = || JoinPhase::Joining(Arc::new(request()));
         let phase = self
             .join
             .get_or_insert_with(|| if view.screen == ScreenKind::InWorld { JoinPhase::Leaving } else { joining() });

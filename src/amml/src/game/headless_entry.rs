@@ -37,10 +37,16 @@ impl HeadlessEntry {
     pub const COMMAND_REQUEST_PACKET_M_COMMAND: EntryId = EntryId::new("CommandRequestPacket.mCommand");
     pub const COMMAND_REQUEST_PACKET_SIZE: EntryId = EntryId::new("CommandRequestPacket.size");
 
+    // the game's local world start: `World::LocalWorldStarter::startLocalWorld`, and the field of the world system that holds
+    // the LocalWorldStarter pointer
+    pub const LOCAL_WORLD_STARTER_START_LOCAL_WORLD: EntryId = EntryId::new("LocalWorldStarter.startLocalWorld");
+    pub const WORLD_SYSTEM_LOCAL_WORLD_STARTER: EntryId = EntryId::new("WorldSystem.mLocalWorldStarter");
+
     pub const POSITION: &'static str = "the player position";
     pub const ROTATION: &'static str = "the player rotation";
     pub const DIMENSION: &'static str = "the dimension";
     pub const JOIN: &'static str = "the server join";
+    pub const JOIN_WORLD: &'static str = "the world join";
     pub const LEAVE: &'static str = "the world leave";
     pub const COMMAND: &'static str = "sending a command";
 
@@ -57,6 +63,14 @@ impl HeadlessEntry {
         Self::MINECRAFT_GAME_GET_SERVER_WORLD_JOINER_OWNER,
         Self::NETWORK_WORLD_JOINER_OWNER_NETWORK_WORLD_JOINER,
         Self::NETWORK_WORLD_JOINER_SERVER_WORLD_JOINER,
+        EntryId::CLIENT_INSTANCE_GET_MINECRAFT_GAME,
+        EntryId::MINECRAFT_GAME_IS_PRIMARY_CLIENT_INSTANCE_READY,
+    ];
+    // the game's local world start, the world system chain to it, and the game it starts from
+    pub const JOIN_WORLD_ENTRIES: [EntryId; 5] = [
+        Self::LOCAL_WORLD_STARTER_START_LOCAL_WORLD,
+        Self::WORLD_SYSTEM_LOCAL_WORLD_STARTER,
+        Self::MINECRAFT_GAME_GET_SERVER_WORLD_JOINER_OWNER,
         EntryId::CLIENT_INSTANCE_GET_MINECRAFT_GAME,
         EntryId::MINECRAFT_GAME_IS_PRIMARY_CLIENT_INSTANCE_READY,
     ];
@@ -80,6 +94,7 @@ impl HeadlessEntry {
             all(&Self::JOIN_ENTRIES),
             all(&Self::LEAVE_ENTRIES),
             all(&Self::COMMAND_ENTRIES),
+            all(&Self::JOIN_WORLD_ENTRIES),
         )
     }
 }

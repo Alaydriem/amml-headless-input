@@ -27,34 +27,65 @@ fn every_read_entry_gives_every_capability() {
 fn a_missing_read_entry_turns_off_only_its_capability() {
     assert_eq!(
         capabilities_without(&["StateVectorComponent.mPos"]),
-        Capabilities::new(false, true, true, true, true, true)
+        Capabilities::new(false, true, true, true, true, true, true)
     );
     assert_eq!(
         capabilities_without(&["ActorRotationComponent.mRot"]),
-        Capabilities::new(true, false, true, true, true, true)
+        Capabilities::new(true, false, true, true, true, true, true)
     );
     assert_eq!(
         capabilities_without(&["Dimension.getDimensionId"]),
-        Capabilities::new(true, true, false, true, true, true)
+        Capabilities::new(true, true, false, true, true, true, true)
     );
 }
 
 #[test]
-fn a_missing_join_entry_turns_off_only_the_join() {
+fn a_missing_server_join_entry_turns_off_only_the_join() {
     for entry in [
         "ServerWorldJoiner.joinExternalServer",
-        "MinecraftGame.getWorldSystem",
-        "WorldSystem.mNetworkWorldJoiner",
         "NetworkWorldJoiner.mServerWorldJoiner",
+        "WorldSystem.mNetworkWorldJoiner",
+    ] {
+        assert_eq!(
+            capabilities_without(&[entry]),
+            Capabilities::new(true, true, true, false, true, true, true),
+            "{entry}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_entry_both_joins_share_turns_off_both() {
+    for entry in [
+        "MinecraftGame.getWorldSystem",
         "ClientInstance.getMinecraftGame",
         "MinecraftGame.isPrimaryClientInstanceReady",
     ] {
-        assert_eq!(capabilities_without(&[entry]), Capabilities::new(true, true, true, false, true, true), "{entry}");
+        assert_eq!(
+            capabilities_without(&[entry]),
+            Capabilities::new(true, true, true, false, true, true, false),
+            "{entry}"
+        );
     }
+}
+
+#[test]
+fn a_missing_leave_entry_turns_off_only_the_leave() {
     assert_eq!(
         capabilities_without(&["ClientInstance.requestLeaveGame"]),
-        Capabilities::new(true, true, true, true, false, true)
+        Capabilities::new(true, true, true, true, false, true, true)
     );
+}
+
+#[test]
+fn join_world_capability_needs_every_new_entry() {
+    for entry in ["LocalWorldStarter.startLocalWorld", "WorldSystem.mLocalWorldStarter"] {
+        assert_eq!(
+            capabilities_without(&[entry]),
+            Capabilities::new(true, true, true, true, true, true, false),
+            "{entry}"
+        );
+    }
 }
 
 #[test]
@@ -73,6 +104,10 @@ fn a_missing_command_entry_turns_off_only_sending_a_command() {
         "CommandRequestPacket.mCommand",
         "CommandRequestPacket.size",
     ] {
-        assert_eq!(capabilities_without(&[entry]), Capabilities::new(true, true, true, true, true, false), "{entry}");
+        assert_eq!(
+            capabilities_without(&[entry]),
+            Capabilities::new(true, true, true, true, true, false, true),
+            "{entry}"
+        );
     }
 }

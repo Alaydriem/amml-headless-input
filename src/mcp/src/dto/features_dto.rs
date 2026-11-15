@@ -12,11 +12,22 @@ pub struct FeaturesDto {
     // an older member that does not report it cannot send a command
     #[serde(default)]
     pub command: bool,
+    // an older member that does not report it cannot open a local world
+    #[serde(default)]
+    pub join_world: bool,
 }
 
 impl FeaturesDto {
     pub fn capabilities(&self) -> Capabilities {
-        Capabilities::new(self.position, self.rotation, self.dimension, self.join, self.leave, self.command)
+        Capabilities::new(
+            self.position,
+            self.rotation,
+            self.dimension,
+            self.join,
+            self.leave,
+            self.command,
+            self.join_world,
+        )
     }
 }
 
@@ -29,6 +40,7 @@ impl From<Capabilities> for FeaturesDto {
             join: capabilities.join,
             leave: capabilities.leave,
             command: capabilities.command,
+            join_world: capabilities.join_world,
         }
     }
 }

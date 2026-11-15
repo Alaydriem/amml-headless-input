@@ -24,6 +24,7 @@ amm-core.workspace = true
 curia.workspace = true
 hcl-rs.workspace = true
 serde.workspace = true
+image = { version = "=0.25.6", default-features = false, features = ["png"] }
 thiserror = "2"
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "net", "time"] }
 

@@ -1,7 +1,7 @@
 use alaydriem_headless_input::errors::OutputError;
 use alaydriem_headless_input::output::{InputOutput, LeaseHolder};
 use amm_core::structs::input::{PointerButton, PointerOp as ManagerPointerOp, TurnAxis};
-use headless_input_core::control::{InputKey, PointerAction};
+use headless_input_core::control::{InputKey, PointerAction, TapKey};
 use headless_input_core::player::{InputFrame, KeySet, PlayerView, PointerOp, ScreenKind};
 use headless_input_core::run::{Command, EndReason, LiveAction, RunDefaults, RunSupervisor};
 use headless_input_core::structs::SystemClock;
@@ -333,4 +333,59 @@ fn forget_drops_the_commanded_look() {
     output.apply(&look(30.0, 0.0), &port, Some((20.0, 0.0))).unwrap();
 
     assert_eq!(port.calls(), vec![turn(TurnAxis::Yaw, 10_000)]);
+}
+
+fn tap(name: &str) -> InputFrame {
+    InputFrame { tap: Some(TapKey::parse(name).unwrap()), ..InputFrame::default() }
+}
+
+#[test]
+fn a_press_taps_its_key_down_then_up_on_the_next_frame() {
+    let port = FakeManager::new();
+    let mut output = InputOutput::new();
+
+    output.apply(&tap("F5"), &port, None).unwrap();
+    assert_eq!(port.calls(), vec![Call::Key(0x74, true)]);
+
+    output.apply(&InputFrame::default(), &port, None).unwrap();
+    assert_eq!(port.calls(), vec![Call::Key(0x74, true), Call::Key(0x74, false)]);
+}
+
+#[test]
+fn a_press_and_a_hotbar_tap_in_one_frame_both_go_down_and_up() {
+    let port = FakeManager::new();
+    let mut output = InputOutput::new();
+
+    output.apply(&InputFrame { hotbar: Some(2), ..tap("E") }, &port, None).unwrap();
+    let downs = port.calls();
+    assert_eq!(downs.len(), 2);
+    assert!(downs.contains(&Call::Key(0x45, true)) && downs.contains(&Call::Key(0x32, true)), "{downs:?}");
+    port.clear();
+
+    output.apply(&InputFrame::default(), &port, None).unwrap();
+    let ups = port.calls();
+    assert_eq!(ups.len(), 2);
+    assert!(ups.contains(&Call::Key(0x45, false)) && ups.contains(&Call::Key(0x32, false)), "{ups:?}");
+}
+
+#[test]
+fn the_same_key_pressed_twice_in_a_row_goes_up_then_down() {
+    let port = FakeManager::new();
+    let mut output = InputOutput::new();
+
+    output.apply(&tap("Esc"), &port, None).unwrap();
+    port.clear();
+    output.apply(&tap("Esc"), &port, None).unwrap();
+    assert_eq!(port.calls(), vec![Call::Key(0x1B, false), Call::Key(0x1B, true)]);
+}
+
+#[test]
+fn release_all_lets_go_of_a_pressed_key() {
+    let port = FakeManager::new();
+    let mut output = InputOutput::new();
+
+    output.apply(&tap("Esc"), &port, None).unwrap();
+    port.clear();
+    output.release_all(&port);
+    assert_eq!(port.calls(), vec![Call::Key(0x1B, false)]);
 }

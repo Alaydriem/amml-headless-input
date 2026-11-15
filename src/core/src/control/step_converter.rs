@@ -5,7 +5,7 @@ use hcl::{Block, Body, Structure};
 use serde::de::DeserializeOwned;
 
 use super::raw::{RawHold, RawRepeat, RawStep};
-use super::{BodyAttributes, ControlFile, DimensionName, InputKey, LineIndex, PointerAction, Step, Ticks};
+use super::{BodyAttributes, ControlFile, DimensionName, InputKey, LineIndex, PointerAction, Step, TapKey, Ticks};
 use crate::errors::ControlError;
 use crate::structs::Capabilities;
 
@@ -31,12 +31,14 @@ impl<'a> StepConverter<'a> {
     }
 
     // the steps of a body at this repeat depth; its attributes belong to the caller
-    // `resolve` gives the IPv4 address of a join_server host, or None when it has none
+    // `resolve` gives the IPv4 address of a join_server host, or None when it has none; `find_world` gives the level
+    // id of a join_world world text, or None when no world has that name
     pub fn steps(
         &mut self,
         body: &Body,
         depth: usize,
         resolve: &impl Fn(&str) -> Option<Ipv4Addr>,
+        find_world: &impl Fn(&str) -> Option<String>,
     ) -> Result<Vec<Step>, ControlError> {
         let mut steps = Vec::new();
         for structure in body.iter() {
@@ -44,8 +46,8 @@ impl<'a> StepConverter<'a> {
                 continue;
             };
             match block.identifier() {
-                "step" => steps.push(self.step(block, resolve)?),
-                "repeat" => steps.push(self.repeat(block, depth + 1, resolve)?),
+                "step" => steps.push(self.step(block, resolve, find_world)?),
+                "repeat" => steps.push(self.repeat(block, depth + 1, resolve, find_world)?),
                 "defaults" if depth == 0 => {
                     self.index.block_line("defaults", None, &mut self.cursor);
                 }
@@ -67,6 +69,7 @@ impl<'a> StepConverter<'a> {
         block: &Block,
         depth: usize,
         resolve: &impl Fn(&str) -> Option<Ipv4Addr>,
+        find_world: &impl Fn(&str) -> Option<String>,
     ) -> Result<Step, ControlError> {
         let line = self.index.block_line("repeat", None, &mut self.cursor);
         if depth > ControlFile::MAX_DEPTH {
@@ -87,7 +90,7 @@ impl<'a> StepConverter<'a> {
         if count.is_none() && timeout.is_none() {
             return Err(ControlError::new(line, "a repeat with no count needs a timeout"));
         }
-        let steps = self.steps(block.body(), depth, resolve)?;
+        let steps = self.steps(block.body(), depth, resolve, find_world)?;
         Ok(Step::Repeat { count, timeout, steps })
     }
 
@@ -139,17 +142,24 @@ impl<'a> StepConverter<'a> {
             "turn" | "look_at" => &["yaw", "pitch", "over"],
             "attack" | "use" => &["hold"],
             "hotbar" => &["slot"],
+            "press" => &["key"],
             "scroll" => &["steps"],
             "command" => &["text"],
             "walk_to" => &["x", "y", "z", "within", "sprint", "timeout"],
             "walk_until_dimension" => &["dimension", "timeout"],
             "join_server" => &["address", "port", "timeout"],
+            "join_world" => &["world", "timeout"],
             "leave_world" => &["timeout"],
             _ => return None,
         })
     }
 
-    fn step(&mut self, block: &Block, resolve: &impl Fn(&str) -> Option<Ipv4Addr>) -> Result<Step, ControlError> {
+    fn step(
+        &mut self,
+        block: &Block,
+        resolve: &impl Fn(&str) -> Option<Ipv4Addr>,
+        find_world: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Step, ControlError> {
         let kind = match block.labels() {
             [label] => label.as_str().to_string(),
             _ => {
@@ -173,7 +183,7 @@ impl<'a> StepConverter<'a> {
             }
         }
         let raw: RawStep = Self::read(block.body(), line)?;
-        let step = self.build(&kind, &raw, line, resolve)?;
+        let step = self.build(&kind, &raw, line, resolve, find_world)?;
         match self.capabilities.missing_for(&step) {
             Some(read) => Err(ControlError::new(
                 line,
@@ -189,6 +199,7 @@ impl<'a> StepConverter<'a> {
         raw: &RawStep,
         line: Option<usize>,
         resolve: &impl Fn(&str) -> Option<Ipv4Addr>,
+        find_world: &impl Fn(&str) -> Option<String>,
     ) -> Result<Step, ControlError> {
         Ok(match kind {
             "move" => {
@@ -245,6 +256,11 @@ impl<'a> StepConverter<'a> {
                     Ok(slot @ 1..=9) => Step::Hotbar { slot },
                     _ => return Err(ControlError::new(line, "slot must be from 1 to 9")),
                 }
+            }
+            "press" => {
+                let name = raw.key.as_deref().ok_or_else(|| ControlError::new(line, "key is required"))?;
+                let key = TapKey::parse(name).map_err(|error| ControlError::new(line, error.to_string()))?;
+                Step::Press { key }
             }
             "scroll" => {
                 let steps = Self::need(raw.steps, "steps", line)?;
@@ -304,6 +320,16 @@ impl<'a> StepConverter<'a> {
                     },
                 };
                 Step::JoinServer { host, address, port, timeout: self.goal_timeout(raw, line)? }
+            }
+            "join_world" => {
+                let world = match &raw.world {
+                    Some(world) if !world.trim().is_empty() => world.clone(),
+                    _ => return Err(ControlError::new(line, "world is required")),
+                };
+                let Some(level_id) = find_world(&world) else {
+                    return Err(ControlError::new(line, format!("no world named \"{world}\"")));
+                };
+                Step::JoinWorld { world, level_id, timeout: self.goal_timeout(raw, line)? }
             }
             _ => Step::LeaveWorld { timeout: self.goal_timeout(raw, line)? },
         })

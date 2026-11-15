@@ -30,6 +30,8 @@ entries = [
   "PacketSender.send",
   "CommandRequestPacket.mCommand",
   "CommandRequestPacket.size",
+  "LocalWorldStarter.startLocalWorld",
+  "WorldSystem.mLocalWorldStarter",
 ]
 
 listing {

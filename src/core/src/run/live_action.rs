@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use crate::control::{PointerAction, Ticks};
+use crate::control::{PointerAction, TapKey, Ticks};
 use crate::player::KeySet;
 
 // One live call. Each acts like the step of the same name; actions of different kinds run at the same time.
@@ -13,10 +13,12 @@ pub enum LiveAction {
     // 0 hold ticks is one click
     Pointer { action: PointerAction, hold_ticks: u32 },
     Hotbar { slot: u8 },
+    Press { key: TapKey },
     Scroll { steps: i32 },
     // `host` is the name given; `address` is the IPv4 address it resolved to. No timeout uses the goal timeout of the
     // run defaults
     JoinServer { host: String, address: Ipv4Addr, port: u16, timeout: Option<Ticks> },
+    JoinWorld { world: String, level_id: String, timeout: Option<Ticks> },
     LeaveWorld { timeout: Option<Ticks> },
     // ends the live session
     Release,

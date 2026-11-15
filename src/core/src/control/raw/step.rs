@@ -29,5 +29,7 @@ pub struct RawStep {
     pub dimension: Option<String>,
     pub address: Option<String>,
     pub port: Option<i64>,
+    pub world: Option<String>,
+    pub key: Option<String>,
     pub timeout: Option<String>,
 }

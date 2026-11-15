@@ -3,9 +3,9 @@ use std::time::Instant;
 
 use headless_input_core::player::{InputFrame, PlayerView, ScreenKind};
 use headless_input_core::run::{
-    Command, CommandQueue, EndReason, LiveAction, RunDefaults, RunId, RunResult, RunStatus, RunSupervisor,
+    Command, CommandQueue, EndReason, JoinAnswer, LiveAction, RunDefaults, RunId, RunResult, RunStatus, RunSupervisor,
 };
-use headless_input_core::structs::{JoinTarget, SystemClock};
+use headless_input_core::structs::{JoinRequest, SystemClock};
 use headless_input_mcp::port::PortError;
 
 use crate::command::{CommandClient, CommandService};
@@ -29,7 +29,7 @@ pub struct RunDriver {
     commands: Vec<Command>,
     replies: Vec<Arc<CommandReply>>,
     // the join and leave of the last input sent; each frame asks the join service for them again
-    wanted_join: Option<Arc<JoinTarget>>,
+    wanted_join: Option<Arc<JoinRequest>>,
     wanted_leave: bool,
 }
 
@@ -99,9 +99,12 @@ impl RunDriver {
         if self.wanted_leave {
             self.join.request_leave();
         }
-        if let Some(code) = self.join.pump(join, Instant::now())
-            && self.supervisor.join_refused(view, code)
-        {
+        let refused = match self.join.pump(join, Instant::now()) {
+            Some(JoinAnswer::Server(code)) => self.supervisor.join_refused(view, code),
+            Some(JoinAnswer::World(code)) => self.supervisor.world_refused(view, code),
+            None => false,
+        };
+        if refused {
             self.finish(port);
         }
         // a run that ended since its tick asked for a command sends nothing
@@ -111,7 +114,7 @@ impl RunDriver {
             self.supervisor.abort(error.why());
             self.finish(port);
         }
-        *status.lock().unwrap_or_else(PoisonError::into_inner) = self.supervisor.status(view);
+        self.supervisor.status_into(view, &mut status.lock().unwrap_or_else(PoisonError::into_inner));
     }
 
     // disable: the active run ends aborted, then the held input and the lease are released

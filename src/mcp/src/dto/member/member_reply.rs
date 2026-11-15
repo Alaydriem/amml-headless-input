@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::dto::StatusDto;
+use crate::dto::{ScreenshotDto, StatusDto, WorldDto};
 use crate::port::PortError;
 
 // What an instance answers to one `MemberRequest`.
@@ -10,5 +10,7 @@ pub enum MemberReply {
     Run(u64),
     Done,
     Status(Box<StatusDto>),
+    Worlds(Vec<WorldDto>),
+    Screenshot(Box<ScreenshotDto>),
     Failed(PortError),
 }

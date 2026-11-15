@@ -174,7 +174,7 @@ fn hooks_are_bounded_and_taken_newest_first() {
 
 #[test]
 fn capabilities_are_off_until_the_entries_are_set() {
-    assert_eq!(runtime().capabilities(), Capabilities::new(false, false, false, false, false, false));
+    assert_eq!(runtime().capabilities(), Capabilities::new(false, false, false, false, false, false, false));
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use headless_input_core::control::ControlFile;
 use headless_input_core::run::{LiveAction, RunDefaults, RunId, RunStatus};
-use headless_input_core::structs::Capabilities;
+use headless_input_core::structs::{Capabilities, ScreenshotRequest, ScreenshotShot, WorldCatalog};
 
 // What the hub can ask of the local game instance. Every method blocks; the hub calls each one inside
 // `tokio::task::spawn_blocking`.
@@ -21,10 +21,14 @@ pub trait HeadlessPort: Send + Sync + 'static {
     fn live(&self, action: LiveAction) -> Result<(), PortError>;
     // the reads and game calls the game build gives
     fn features(&self) -> Capabilities;
+    // the local worlds on disk, in the order `join_world` searches them
+    fn worlds(&self) -> Result<WorldCatalog, PortError>;
     // the settings a control file falls back on
     fn defaults(&self) -> RunDefaults;
     // the folder a control-file path that is not absolute, a bare file name among them, is read from
     fn control_folder(&self) -> PathBuf;
     // asks the person whether `client` may have a token; false on deny or no answer
     fn approve_pairing(&self, client: &str) -> bool;
+    // a PNG of the game screen, scaled to the request; blocks until the manager wrote it or the wait ran out
+    fn screenshot(&self, request: ScreenshotRequest) -> Result<ScreenshotShot, PortError>;
 }

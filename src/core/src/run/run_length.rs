@@ -27,10 +27,11 @@ impl RunLength {
             | Step::Wait { ticks } => u64::from(ticks.get()),
             // the press ticks, then the release tick
             Step::Pointer { hold_ticks, .. } => u64::from(*hold_ticks).max(1) + 1,
-            Step::Hotbar { .. } | Step::Scroll { .. } | Step::Command { .. } => 1,
+            Step::Hotbar { .. } | Step::Press { .. } | Step::Scroll { .. } | Step::Command { .. } => 1,
             Step::WalkTo { timeout, .. }
             | Step::WalkUntilDimension { timeout, .. }
             | Step::JoinServer { timeout, .. }
+            | Step::JoinWorld { timeout, .. }
             | Step::LeaveWorld { timeout } => u64::from(timeout.get()),
             Step::Repeat { count, timeout, steps } => {
                 let counted = count.map(|count| Self::of(steps).saturating_mul(u64::from(count)));

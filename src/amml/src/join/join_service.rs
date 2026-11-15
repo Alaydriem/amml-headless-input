@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use headless_input_core::structs::JoinTarget;
+use headless_input_core::run::{JoinAnswer, WorldStartCodes};
+use headless_input_core::structs::{JoinRequest, WorldTarget};
 
 use crate::game::ScreenReader;
 use crate::join::JoinClient;
@@ -17,12 +18,12 @@ use crate::join::JoinClient;
 // frame asked for it. A toast on top counts as the screen the last read saw while a request is asked.
 pub struct JoinService {
     // the join the frame asked for since the last pump
-    asked_join: Option<Arc<JoinTarget>>,
+    asked_join: Option<Arc<JoinRequest>>,
     asked_leave: bool,
     // the join the game took
-    joining: Option<Arc<JoinTarget>>,
+    joining: Option<Arc<JoinRequest>>,
     // the target the servers tab state belongs to; another target asks the tab again
-    tab_target: Option<Arc<JoinTarget>>,
+    tab_target: Option<Arc<JoinRequest>>,
     // the game was asked to leave and the title has not shown since
     leaving: bool,
     // the game did not take the asked join and that was logged
@@ -61,7 +62,7 @@ impl JoinService {
         }
     }
 
-    pub fn request(&mut self, target: Arc<JoinTarget>) {
+    pub fn request(&mut self, target: Arc<JoinRequest>) {
         self.asked_join = Some(target);
     }
 
@@ -70,8 +71,8 @@ impl JoinService {
     }
 
     // once per frame, after the frame's requests. It calls the game only while a request is asked. Answers the result
-    // code the game gave a taken join, once
-    pub fn pump(&mut self, client: &impl JoinClient, now: Instant) -> Option<i32> {
+    // code the game gave a taken server join, or the code that refused a world start, once
+    pub fn pump(&mut self, client: &impl JoinClient, now: Instant) -> Option<JoinAnswer> {
         let join = self.asked_join.take();
         let leave = std::mem::take(&mut self.asked_leave);
         if join.is_none() {
@@ -109,17 +110,23 @@ impl JoinService {
     fn pump_join(
         &mut self,
         client: &impl JoinClient,
-        target: Arc<JoinTarget>,
+        target: Arc<JoinRequest>,
         title: bool,
         name: &str,
         now: Instant,
-    ) -> Option<i32> {
+    ) -> Option<JoinAnswer> {
         if self.joining.as_ref().is_some_and(|joining| Arc::ptr_eq(joining, &target)) {
             self.log_screen(name);
-            return client.take_join_result();
+            return match &*target {
+                JoinRequest::Server(_) => client.take_join_result().map(JoinAnswer::Server),
+                JoinRequest::World(_) => None,
+            };
         }
         if !title || !client.is_primary_ready() || client.is_in_game() {
             return None;
+        }
+        if let JoinRequest::World(world) = &*target {
+            return self.pump_world(client, &target, world, now);
         }
         if !self.tab_target.as_ref().is_some_and(|tab_target| Arc::ptr_eq(tab_target, &target)) {
             self.tab_ready_at = None;
@@ -130,19 +137,57 @@ impl JoinService {
         if !self.tab_ready(client, name, now) {
             return None;
         }
+        let JoinRequest::Server(server) = &*target else {
+            return None;
+        };
         client.clear_join_result();
-        if !client.join_server(&target) {
+        if !client.join_server(server) {
             if !self.refusal_logged {
                 curia::warn!("the game did not take the join; it is asked again");
                 self.refusal_logged = true;
             }
             return None;
         }
-        curia::info!("the game took the join", { address: target.address.to_string(), port: target.port });
+        curia::info!("the game took the join", { address: server.address.to_string(), port: server.port });
         self.refusal_logged = false;
         self.joining = Some(target);
         self.taken_at = Some(now);
         self.logged_screen.clear();
+        None
+    }
+
+    // asks the game to start the world, with no screen opened first. Code 0 is a taken start, code 3 means the game is not
+    // ready and the start is asked again on a later frame, and any other code answers a failure once
+    fn pump_world(
+        &mut self,
+        client: &impl JoinClient,
+        target: &Arc<JoinRequest>,
+        world: &WorldTarget,
+        now: Instant,
+    ) -> Option<JoinAnswer> {
+        let Some(code) = client.join_world(world) else {
+            if !self.refusal_logged {
+                curia::warn!("the game did not take the world join; it is asked again");
+                self.refusal_logged = true;
+            }
+            return None;
+        };
+        if WorldStartCodes::is_not_ready(code) {
+            if !self.refusal_logged {
+                curia::info!("the game is not ready to start a world; it is asked again");
+                self.refusal_logged = true;
+            }
+            return None;
+        }
+        self.refusal_logged = false;
+        self.joining = Some(Arc::clone(target));
+        self.taken_at = Some(now);
+        self.logged_screen.clear();
+        if WorldStartCodes::is_failure(code) {
+            curia::warn!("the game refused the world join", { result: code });
+            return Some(JoinAnswer::World(code));
+        }
+        curia::info!("the game took the world join", { level_id: world.level_id.clone() });
         None
     }
 

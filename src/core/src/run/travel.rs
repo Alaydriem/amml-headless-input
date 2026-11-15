@@ -19,6 +19,7 @@ impl Travel {
     pub fn new(step: &Step, since: Instant, cursor: Option<StepCursor>) -> Option<Self> {
         let (timeout, why): (Ticks, &'static str) = match step {
             Step::JoinServer { timeout, .. } => (*timeout, "join_server passed its timeout"),
+            Step::JoinWorld { timeout, .. } => (*timeout, "join_world passed its timeout"),
             Step::LeaveWorld { timeout } => (*timeout, "leave_world passed its timeout"),
             _ => return None,
         };

@@ -5,7 +5,7 @@ use std::sync::mpsc::Receiver;
 
 use headless_input_core::control::ControlFile;
 use headless_input_core::run::{LiveAction, RunDefaults, RunId, RunState, RunStatus};
-use headless_input_core::structs::Capabilities;
+use headless_input_core::structs::{Capabilities, ScreenshotRequest, ScreenshotShot, WorldCatalog, WorldEntry};
 use headless_input_mcp::port::{HeadlessPort, PortError};
 
 // How a `FakePort` answers.
@@ -19,6 +19,10 @@ pub struct FakeSetup {
     pub run_error: Option<PortError>,
     // what `control_folder` answers
     pub folder: PathBuf,
+    // what `worlds` answers
+    pub worlds: Vec<WorldEntry>,
+    // what `screenshot` answers; `None` refuses
+    pub screenshot: Option<ScreenshotShot>,
 }
 
 impl Default for FakeSetup {
@@ -29,6 +33,8 @@ impl Default for FakeSetup {
             pairing_gate: None,
             run_error: None,
             folder: std::env::temp_dir(),
+            worlds: Vec::new(),
+            screenshot: None,
         }
     }
 }
@@ -41,6 +47,8 @@ pub struct FakePort {
     pairing_gate: Option<Mutex<Receiver<()>>>,
     run_error: Option<PortError>,
     folder: PathBuf,
+    worlds: Vec<WorldEntry>,
+    screenshot: Option<ScreenshotShot>,
     next_run: AtomicU64,
 }
 
@@ -53,6 +61,8 @@ impl FakePort {
             pairing_gate: setup.pairing_gate.map(Mutex::new),
             run_error: setup.run_error,
             folder: setup.folder,
+            worlds: setup.worlds,
+            screenshot: setup.screenshot,
             next_run: AtomicU64::new(1),
         }
     }
@@ -63,6 +73,14 @@ impl FakePort {
 
     pub fn pairing(answer: bool) -> Self {
         Self::new(FakeSetup { pairing: answer, ..FakeSetup::default() })
+    }
+
+    pub fn with_worlds(worlds: Vec<WorldEntry>) -> Self {
+        Self::new(FakeSetup { worlds, ..FakeSetup::default() })
+    }
+
+    pub fn with_screenshot(shot: ScreenshotShot) -> Self {
+        Self::new(FakeSetup { screenshot: Some(shot), ..FakeSetup::default() })
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -101,6 +119,7 @@ impl HeadlessPort for FakePort {
             yaw: 90.0,
             pitch: 0.0,
             dimension: Some(0),
+            screen: "in_world".to_owned(),
         }
     }
 
@@ -117,6 +136,11 @@ impl HeadlessPort for FakePort {
         RunDefaults::default()
     }
 
+    fn worlds(&self) -> Result<WorldCatalog, PortError> {
+        self.record("worlds".to_owned());
+        Ok(WorldCatalog::new(self.worlds.clone()))
+    }
+
     fn control_folder(&self) -> PathBuf {
         self.folder.clone()
     }
@@ -127,5 +151,10 @@ impl HeadlessPort for FakePort {
             let _ = gate.lock().unwrap().recv();
         }
         self.pairing
+    }
+
+    fn screenshot(&self, _request: ScreenshotRequest) -> Result<ScreenshotShot, PortError> {
+        self.record("screenshot".to_owned());
+        self.screenshot.clone().ok_or_else(|| PortError::Refused("no screenshot in this fake".to_owned()))
     }
 }

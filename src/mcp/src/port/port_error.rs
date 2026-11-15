@@ -19,6 +19,8 @@ pub enum PortError {
     Io(String),
     #[error("no instance is named {0}")]
     UnknownInstance(String),
+    #[error("no world named \"{world}\"")]
+    UnknownWorld { world: String },
     #[error("could not resolve {host}")]
     Unresolved { host: String },
     #[error("more than one instance is connected; name one with instance (or \"*\" where allowed): [{}]", connected.join(", "))]

@@ -2,15 +2,17 @@ use std::path::Path;
 
 use amm_client::link::{ApiTable, EventDrain, ManagerLink};
 use amm_core::errors::LinkError;
+use amm_core::structs::capture::ScreenshotLayers;
 use amm_core::structs::descriptor::Capability;
 use amm_core::structs::event::ModEvent;
 use amm_core::structs::input::PointerOp;
 use amm_core::structs::lease::AcquireOutcome;
 use headless_input_core::config::HeadlessConfig;
+use headless_input_core::structs::ScreenshotLayer;
 
 use crate::errors::{LeaseError, OutputError};
 use crate::services::{HeadlessDescriptor, RawSettings, SettingsReader};
-use crate::traits::ManagerPort;
+use crate::traits::{ManagerPort, ScreenshotPort};
 
 // the registration with the mod manager and the settings read from it; `events` holds at most
 // MAX_EVENTS_PER_TICK and is cleared at the start of every drain
@@ -107,5 +109,37 @@ impl ManagerPort for HeadlessLink {
 
     fn panel_open(&self) -> bool {
         self.link.panel_open()
+    }
+}
+
+impl ScreenshotPort for HeadlessLink {
+    fn supports_screenshots(&self) -> bool {
+        self.link.supports_screenshots()
+    }
+
+    fn acquire_overlay(&self) -> bool {
+        match self.link.acquire(Capability::Overlay) {
+            Ok(AcquireOutcome::Granted) => true,
+            Ok(outcome) => {
+                curia::warn!("the Overlay lease for a screenshot was not granted", { outcome: format!("{outcome:?}") });
+                false
+            }
+            Err(error) => {
+                curia::warn!("the Overlay lease for a screenshot could not be asked for", { error: error.to_string() });
+                false
+            }
+        }
+    }
+
+    fn release_overlay(&self) {
+        self.link.release(Capability::Overlay);
+    }
+
+    fn request_screenshot(&self, path: &Path, layer: ScreenshotLayer) -> Result<u32, OutputError> {
+        let layers = match layer {
+            ScreenshotLayer::Game => ScreenshotLayers::GameOnly,
+            ScreenshotLayer::Mods => ScreenshotLayers::WithModLayers,
+        };
+        self.link.request_screenshot_with(path, layers).map_err(OutputError::from_link)
     }
 }

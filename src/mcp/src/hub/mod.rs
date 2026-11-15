@@ -18,6 +18,7 @@ pub mod member_route;
 pub mod pending_guard;
 pub mod poll_guard;
 pub mod role_cell;
+pub mod world_lookup;
 
 pub use control_folder::ControlFolder;
 pub use exclusive_listener::ExclusiveListener;
@@ -38,3 +39,4 @@ pub use member_route::MemberRoute;
 pub use pending_guard::PendingGuard;
 pub use poll_guard::PollGuard;
 pub use role_cell::RoleCell;
+pub use world_lookup::WorldLookup;

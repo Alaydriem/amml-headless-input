@@ -6,6 +6,7 @@ use super::join_result_codes::JoinResultCodes;
 use super::live_session::LiveSession;
 use super::run_length::RunLength;
 use super::travel::Travel;
+use super::world_start_codes::WorldStartCodes;
 use super::{Command, EndReason, FrameOutcome, LiveAction, RunDefaults, RunId, RunResult, RunState, RunStatus};
 use crate::control::{ControlFile, Step, Ticks};
 use crate::errors::Refusal;
@@ -139,6 +140,7 @@ impl<C: Clock> RunSupervisor<C> {
                     self.live_call(action, now);
                     Ok(self.run)
                 }
+                RunState::Live if !self.live.accepts(&action) => Err(Refusal::PressQueueFull),
                 RunState::Live => {
                     let run = self.run;
                     if action == LiveAction::Release {
@@ -174,11 +176,23 @@ impl<C: Clock> RunSupervisor<C> {
         let Some(why) = JoinResultCodes::failure(code) else {
             return false;
         };
+        self.fail_join(view, why, |step| matches!(step, Step::JoinServer { .. }))
+    }
+
+    // the game answered the world start it was asked with `code`. As `join_refused`, for the codes of the world start and
+    // only while a join_world step is under way
+    pub fn world_refused(&mut self, view: &PlayerView, code: i32) -> bool {
+        let Some(why) = WorldStartCodes::failure(code) else {
+            return false;
+        };
+        self.fail_join(view, why, |step| matches!(step, Step::JoinWorld { .. }))
+    }
+
+    // ends the run or live session failed with `why` when its current step is one `wanted` accepts; true when it did
+    fn fail_join(&mut self, view: &PlayerView, why: Cow<'static, str>, wanted: fn(&Step) -> bool) -> bool {
         let joining = match self.state {
-            RunState::Running => {
-                matches!(self.player.as_ref().and_then(StepPlayer::current_step), Some(Step::JoinServer { .. }))
-            }
-            RunState::Live => matches!(self.live.travel(), Some(Step::JoinServer { .. })),
+            RunState::Running => self.player.as_ref().and_then(StepPlayer::current_step).is_some_and(wanted),
+            RunState::Live => self.live.travel().is_some_and(wanted),
             RunState::Idle => false,
         };
         if !joining {
@@ -194,19 +208,38 @@ impl<C: Clock> RunSupervisor<C> {
     }
 
     pub fn status(&self, view: &PlayerView) -> RunStatus {
-        let active = self.state != RunState::Idle;
-        RunStatus {
+        let mut status = RunStatus {
             state: self.state,
-            run: active.then_some(self.run),
-            name: self.name.clone(),
-            cursor: self.player.as_ref().map(StepPlayer::current),
-            ticks: if active { self.ticks } else { 0 },
-            last: self.last.clone(),
+            run: None,
+            name: None,
+            cursor: None,
+            ticks: 0,
+            last: None,
             position: view.position,
             yaw: view.yaw,
             pitch: view.pitch,
             dimension: view.dimension,
-        }
+            screen: String::new(),
+        };
+        self.status_into(view, &mut status);
+        status
+    }
+
+    // writes the status over `out`; the screen name reuses the buffer `out` holds, so a frame does not allocate
+    pub fn status_into(&self, view: &PlayerView, out: &mut RunStatus) {
+        let active = self.state != RunState::Idle;
+        out.state = self.state;
+        out.run = active.then_some(self.run);
+        out.name.clone_from(&self.name);
+        out.cursor = self.player.as_ref().map(StepPlayer::current);
+        out.ticks = if active { self.ticks } else { 0 };
+        out.last.clone_from(&self.last);
+        out.position = view.position;
+        out.yaw = view.yaw;
+        out.pitch = view.pitch;
+        out.dimension = view.dimension;
+        out.screen.clear();
+        out.screen.push_str(view.screen.name());
     }
 
     pub fn take_end(&mut self) -> Option<RunResult> {
@@ -242,7 +275,10 @@ impl<C: Clock> RunSupervisor<C> {
 
     fn live_call(&mut self, action: LiveAction, now: Instant) {
         self.last_call = now;
-        let travels = matches!(action, LiveAction::JoinServer { .. } | LiveAction::LeaveWorld { .. });
+        let travels = matches!(
+            action,
+            LiveAction::JoinServer { .. } | LiveAction::JoinWorld { .. } | LiveAction::LeaveWorld { .. }
+        );
         self.live.apply(action, self.defaults.goal_timeout);
         if travels {
             self.travel = self.live.travel().and_then(|step| Travel::new(step, now, None));
@@ -329,7 +365,10 @@ impl<C: Clock> RunSupervisor<C> {
             Some(_) => {}
             None if portal_load => {}
             None => {
-                if in_world && let ScreenKind::Other(name) = &view.screen {
+                if in_world
+                    && let ScreenKind::Other(name) = &view.screen
+                    && self.screen_blocks()
+                {
                     let why = format!("the screen {name} opened over the world");
                     return Some(EndReason::Failed { step: self.step(), view: view.clone(), why: Cow::Owned(why) });
                 }
@@ -348,6 +387,12 @@ impl<C: Clock> RunSupervisor<C> {
             return Some(EndReason::Aborted { why: Cow::Borrowed("no live call for the idle time") });
         }
         None
+    }
+
+    // a screen over the world fails a file run whose current step needs the world; a live session never fails on one
+    fn screen_blocks(&self) -> bool {
+        self.state == RunState::Running
+            && self.player.as_ref().and_then(StepPlayer::current_step).is_some_and(Step::needs_world)
     }
 
     fn step(&self) -> Option<usize> {

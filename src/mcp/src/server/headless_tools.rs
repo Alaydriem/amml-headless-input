@@ -7,8 +7,8 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 
 use super::ToolReply;
 use crate::dto::{
-    HotbarArgs, InstanceArgs, JoinServerArgs, KeyArgs, LeaveWorldArgs, LiveActionDto, MemberRequest, MoveArgs,
-    PointerArgs, RunControlFileArgs, ScrollArgs, TurnArgs,
+    HotbarArgs, InstanceArgs, JoinServerArgs, JoinWorldArgs, KeyArgs, LeaveWorldArgs, LiveActionDto, MemberRequest,
+    MoveArgs, PointerArgs, PressArgs, RunControlFileArgs, ScreenshotArgs, ScrollArgs, TurnArgs,
 };
 use crate::hub::{ControlFolder, Forwarder, HubCalls};
 use crate::port::HostResolver;
@@ -112,6 +112,13 @@ impl HeadlessTools {
         self.live(args.instance, LiveActionDto::Hotbar { slot: args.slot }).await
     }
 
+    #[tool(
+        description = "Press and release one key by name, such as E (inventory), Esc (close a screen) or F5 (camera). Esc with no screen open opens the pause menu. Movement, jump, sneak, sprint and hotbar keys have their own tools."
+    )]
+    async fn press(&self, Parameters(args): Parameters<PressArgs>) -> Result<CallToolResult, ErrorData> {
+        self.live(args.instance, LiveActionDto::Press { key: args.key }).await
+    }
+
     #[tool(description = "Scroll the mouse wheel by steps; positive scrolls up.")]
     async fn scroll(&self, Parameters(args): Parameters<ScrollArgs>) -> Result<CallToolResult, ErrorData> {
         self.live(args.instance, LiveActionDto::Scroll { steps: args.steps }).await
@@ -125,6 +132,26 @@ impl HeadlessTools {
             timeout: args.timeout,
         };
         self.live(args.instance, action).await
+    }
+
+    #[tool(
+        description = "Open a local world by its name or folder id; leaves the current world first. A name matches without case; the first match wins."
+    )]
+    async fn join_world(&self, Parameters(args): Parameters<JoinWorldArgs>) -> Result<CallToolResult, ErrorData> {
+        self.live(args.instance, LiveActionDto::JoinWorld { world: args.world, timeout: args.timeout }).await
+    }
+
+    #[tool(description = "The local worlds of the instance, in the order join_world searches them.")]
+    async fn list_worlds(&self, Parameters(args): Parameters<InstanceArgs>) -> Result<CallToolResult, ErrorData> {
+        ToolReply::port(self.calls.one(args.instance.as_deref(), MemberRequest::ListWorlds).await)
+    }
+
+    #[tool(
+        description = "An image of the game as the player sees it, from any screen. layers: \"mods\" (default) includes mod overlays, \"game\" leaves them out. max_width (default 1280) scales a wider image down."
+    )]
+    async fn screenshot(&self, Parameters(args): Parameters<ScreenshotArgs>) -> Result<CallToolResult, ErrorData> {
+        let request = MemberRequest::Screenshot { layers: args.layers, max_width: args.max_width };
+        ToolReply::screenshot(self.calls.one(args.instance.as_deref(), request).await)
     }
 
     #[tool(description = "Leave the current world.")]

@@ -9,6 +9,7 @@ pub mod raw;
 pub mod step;
 pub mod step_converter;
 pub mod step_measure;
+pub mod tap_key;
 pub mod ticks;
 
 pub use body_attributes::BodyAttributes;
@@ -21,4 +22,5 @@ pub use pointer_action::PointerAction;
 pub use step::Step;
 pub use step_converter::StepConverter;
 pub use step_measure::StepMeasure;
+pub use tap_key::TapKey;
 pub use ticks::Ticks;

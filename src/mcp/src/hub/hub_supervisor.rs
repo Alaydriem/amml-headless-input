@@ -114,7 +114,7 @@ impl<P: HeadlessPort> HubSupervisor<P> {
         let local = Arc::clone(&self.local);
         let features = tokio::task::spawn_blocking(move || local.features())
             .await
-            .unwrap_or(Capabilities::new(false, false, false, false, false, false));
+            .unwrap_or(Capabilities::new(false, false, false, false, false, false, false));
         let own = MemberInfo::new(self.id.clone(), std::process::id(), features, true);
         if let Err(error) = registry.register(own) {
             curia::error!("the hub could not register its own instance", { error: error.to_string() });

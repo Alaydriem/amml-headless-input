@@ -53,7 +53,7 @@ fn missing_optional_reads_turn_off_only_their_capabilities() {
 
     assert!(result.is_ok());
     assert_eq!(host.hooked(), [HeadlessMod::UPDATE, HeadlessMod::TICK]);
-    assert_eq!(runtime.capabilities(), Capabilities::new(false, false, false, false, false, false));
+    assert_eq!(runtime.capabilities(), Capabilities::new(false, false, false, false, false, false, false));
     let warnings = host.warnings();
     for feature in [
         HeadlessEntry::POSITION,
@@ -61,6 +61,7 @@ fn missing_optional_reads_turn_off_only_their_capabilities() {
         HeadlessEntry::DIMENSION,
         HeadlessEntry::JOIN,
         HeadlessEntry::LEAVE,
+        HeadlessEntry::JOIN_WORLD,
         HeadlessEntry::SERVERS_TAB,
         HeadlessEntry::COMMAND,
     ] {

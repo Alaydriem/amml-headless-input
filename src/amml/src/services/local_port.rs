@@ -1,14 +1,18 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use headless_input_core::config::HeadlessConfig;
 use headless_input_core::control::ControlFile;
 use headless_input_core::run::{Command, LiveAction, RunDefaults, RunId, RunStatus};
-use headless_input_core::structs::Capabilities;
+use headless_input_core::structs::{Capabilities, ScreenshotRequest, ScreenshotShot, WorldCatalog};
 use headless_input_mcp::port::{HeadlessPort, PortError};
 
-use crate::services::{CommandInbox, CommandReply, PairingPrompt};
+use crate::services::{
+    CommandInbox, CommandReply, PairingPrompt, ScreenshotDesk, ScreenshotFolder, ScreenshotImage, WorldFolderReader,
+};
+use crate::types::LinkState;
 
 // This instance as the hub sees it. A command goes into the inbox and the call waits up to `wait` for the game
 // thread to take it on its next frame; a call no frame takes times out and its command never runs. `status` reads
@@ -21,6 +25,10 @@ pub struct LocalPort {
     config: Arc<RwLock<HeadlessConfig>>,
     prompt: Arc<PairingPrompt>,
     data_dir: PathBuf,
+    worlds: WorldFolderReader,
+    desk: Arc<ScreenshotDesk>,
+    screenshots: ScreenshotFolder,
+    link_state: Arc<AtomicU8>,
     wait: Duration,
 }
 
@@ -29,7 +37,10 @@ impl LocalPort {
     pub const WAIT: Duration = Duration::from_secs(5);
     // the control folder inside the mod data folder when files.folder is empty
     pub const DEFAULT_FOLDER: &'static str = "control";
+    // the screenshot folder inside the mod data folder
+    pub const SCREENSHOT_FOLDER: &'static str = "screenshots";
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         inbox: Arc<CommandInbox>,
         status: Arc<Mutex<RunStatus>>,
@@ -37,9 +48,13 @@ impl LocalPort {
         config: Arc<RwLock<HeadlessConfig>>,
         prompt: Arc<PairingPrompt>,
         data_dir: PathBuf,
+        worlds: WorldFolderReader,
+        desk: Arc<ScreenshotDesk>,
+        screenshots: ScreenshotFolder,
+        link_state: Arc<AtomicU8>,
         wait: Duration,
     ) -> Self {
-        Self { inbox, status, capabilities, config, prompt, data_dir, wait }
+        Self { inbox, status, capabilities, config, prompt, data_dir, worlds, desk, screenshots, link_state, wait }
     }
 
     fn send(&self, command: Command) -> Result<RunId, PortError> {
@@ -69,6 +84,10 @@ impl HeadlessPort for LocalPort {
         self.send(Command::Live(action)).map(|_| ())
     }
 
+    fn worlds(&self) -> Result<WorldCatalog, PortError> {
+        Ok(self.worlds.read())
+    }
+
     fn features(&self) -> Capabilities {
         *self.capabilities.read().unwrap_or_else(PoisonError::into_inner)
     }
@@ -88,5 +107,17 @@ impl HeadlessPort for LocalPort {
 
     fn approve_pairing(&self, client: &str) -> bool {
         self.prompt.ask(client)
+    }
+
+    fn screenshot(&self, request: ScreenshotRequest) -> Result<ScreenshotShot, PortError> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        let path = self.screenshots.next_path(millis);
+        let linked = LinkState::from_u8(self.link_state.load(Ordering::SeqCst)) == LinkState::Attached;
+        let written = self.desk.take(request, path, linked)?;
+        let shot = ScreenshotImage::prepare(&written, &request);
+        self.screenshots.prune();
+        shot
     }
 }

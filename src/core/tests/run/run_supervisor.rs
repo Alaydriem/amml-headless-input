@@ -1,10 +1,12 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use headless_input_core::control::{ControlFile, DimensionName, InputKey, PointerAction, Step, Ticks};
+use headless_input_core::control::{ControlFile, DimensionName, InputKey, PointerAction, Step, TapKey, Ticks};
 use headless_input_core::errors::Refusal;
 use headless_input_core::player::{InputFrame, KeySet, PlayerView, PointerOp, ScreenKind};
-use headless_input_core::run::{Command, EndReason, FrameOutcome, LiveAction, RunDefaults, RunState, RunSupervisor};
+use headless_input_core::run::{
+    Command, EndReason, FrameOutcome, LiveAction, RunDefaults, RunState, RunSupervisor, TapQueue,
+};
 
 use crate::support::FakeClock;
 
@@ -237,6 +239,64 @@ fn a_screen_over_the_world_fails_and_names_the_screen() {
 }
 
 #[test]
+fn a_live_session_keeps_running_with_a_screen_open() {
+    let (mut sup, _clock) = supervisor();
+    let key = TapKey::parse("Esc").unwrap();
+    sup.apply(Command::Live(LiveAction::Press { key })).expect("the session starts");
+    let inventory = view(ScreenKind::Other("inventory_screen".to_string()));
+    assert_eq!(end(&mut sup, &inventory, false, true), None);
+    assert_eq!(sup.on_tick(&inventory).tap, Some(key));
+    assert_eq!(end(&mut sup, &inventory, false, true), None);
+    assert_eq!(sup.status(&inventory).state, RunState::Live);
+}
+
+#[test]
+fn a_file_run_allows_a_screen_during_press_and_wait() {
+    let (mut sup, _clock) = supervisor();
+    let open = TapKey::parse("E").unwrap();
+    let close = TapKey::parse("Esc").unwrap();
+    sup.apply(file(vec![Step::Press { key: open }, Step::Wait { ticks: Ticks(3) }, Step::Press { key: close }]))
+        .expect("the run starts");
+    assert_eq!(sup.on_tick(&world()).tap, Some(open));
+    let inventory = view(ScreenKind::Other("inventory_screen".to_string()));
+    let mut taps = Vec::new();
+    for _ in 0..5 {
+        assert_eq!(end(&mut sup, &inventory, false, true), None);
+        taps.extend(sup.on_tick(&inventory).tap);
+    }
+    assert_eq!(taps, vec![close]);
+}
+
+#[test]
+fn a_file_run_still_fails_on_a_screen_during_a_move() {
+    let (mut sup, _clock) = supervisor();
+    sup.apply(file(vec![walk(100)])).expect("the run starts");
+    sup.on_tick(&world());
+    let inventory = view(ScreenKind::Other("inventory_screen".to_string()));
+    assert!(matches!(end(&mut sup, &inventory, false, true), Some(EndReason::Failed { .. })));
+}
+
+#[test]
+fn status_names_the_screen() {
+    let (sup, _clock) = supervisor();
+    assert_eq!(sup.status(&world()).screen, "in_world");
+    assert_eq!(sup.status(&title()).screen, "title");
+    assert_eq!(sup.status(&loading()).screen, "loading");
+    assert_eq!(sup.status(&view(ScreenKind::Other("inventory_screen".to_string()))).screen, "inventory_screen");
+}
+
+#[test]
+fn a_status_written_into_place_matches_a_new_status() {
+    let (sup, _clock) = supervisor();
+    let mut status = sup.status(&world());
+    let inventory = view(ScreenKind::Other("inventory_screen".to_string()));
+    sup.status_into(&inventory, &mut status);
+    assert_eq!(status, sup.status(&inventory));
+    sup.status_into(&title(), &mut status);
+    assert_eq!(status, sup.status(&title()));
+}
+
+#[test]
 fn loading_screens_during_join_do_not_fail() {
     let (mut sup, _clock) = supervisor();
     sup.apply(file(vec![join(600), walk(10)])).expect("the run starts");
@@ -430,6 +490,46 @@ fn live_actions_start_a_session_and_idle_ends_it() {
 }
 
 #[test]
+fn a_live_press_taps_on_one_frame_only() {
+    let (mut sup, _clock) = supervisor();
+    let key = TapKey::parse("F5").unwrap();
+    sup.apply(Command::Live(LiveAction::Press { key })).expect("the session starts");
+    assert_eq!(sup.on_tick(&world()).tap, Some(key));
+    assert_eq!(sup.on_tick(&world()).tap, None);
+}
+
+#[test]
+fn a_burst_of_live_presses_taps_each_key_on_its_own_tick_with_a_gap() {
+    let (mut sup, _clock) = supervisor();
+    let (f5, e) = (TapKey::parse("F5").unwrap(), TapKey::parse("E").unwrap());
+    for key in [f5, f5, e] {
+        sup.apply(Command::Live(LiveAction::Press { key })).expect("the session takes it");
+    }
+    let taps: Vec<Option<TapKey>> = (0..6).map(|_| sup.on_tick(&world()).tap).collect();
+    assert_eq!(taps, vec![Some(f5), None, Some(f5), None, Some(e), None]);
+}
+
+#[test]
+fn a_press_past_the_queue_capacity_is_refused() {
+    let (mut sup, _clock) = supervisor();
+    let key = TapKey::parse("F5").unwrap();
+    for _ in 0..TapQueue::CAPACITY {
+        sup.apply(Command::Live(LiveAction::Press { key })).expect("the queue has room");
+    }
+    assert_eq!(sup.apply(Command::Live(LiveAction::Press { key })), Err(Refusal::PressQueueFull));
+    assert_eq!(sup.status(&world()).state, RunState::Live);
+}
+
+#[test]
+fn a_press_step_lasts_one_tick() {
+    let (mut sup, _clock) = supervisor();
+    let key = TapKey::parse("E").unwrap();
+    sup.apply(file(vec![Step::Press { key }, Step::Wait { ticks: Ticks(1) }])).expect("the run starts");
+    assert_eq!(sup.on_tick(&world()).tap, Some(key));
+    assert_eq!(sup.on_tick(&world()).tap, None);
+}
+
+#[test]
 fn live_holds_with_ticks_end_and_a_click_releases_next_tick() {
     let (mut sup, _clock) = supervisor();
     sup.apply(Command::Live(LiveAction::Hold { keys: keys(&[InputKey::Jump]), ticks: Some(Ticks(2)) }))
@@ -602,6 +702,89 @@ fn a_failure_code_with_no_join_under_way_ends_nothing() {
     sup.apply(file(vec![walk(10)])).expect("the run starts");
 
     assert!(!sup.join_refused(&world(), 8));
+
+    assert_eq!(sup.status(&world()).state, RunState::Running);
+}
+
+#[test]
+fn join_world_pauses_the_world_left_rule_and_times_out_on_wall_clock() {
+    let (mut sup, clock) = supervisor();
+    let step = Step::JoinWorld { world: "Test Flat".to_string(), level_id: "id1".to_string(), timeout: Ticks(200) };
+    sup.apply(file(vec![step])).expect("the run starts");
+    assert!(sup.on_tick(&world()).leave);
+    clock.advance(SECOND * 9);
+    assert_eq!(end(&mut sup, &view(ScreenKind::Loading), false, false), None);
+    clock.advance(SECOND);
+    match end(&mut sup, &view(ScreenKind::Loading), false, false) {
+        Some(EndReason::Failed { step, why, .. }) => {
+            assert_eq!(step, Some(0));
+            assert!(why.contains("join_world passed its timeout"), "{why}");
+        }
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+fn join_world_step() -> Step {
+    Step::JoinWorld { world: "Test Flat".to_string(), level_id: "id1".to_string(), timeout: Ticks(600) }
+}
+
+#[test]
+fn a_world_start_failure_fails_the_join_world_step_with_its_message() {
+    let (mut sup, _clock) = supervisor();
+    sup.apply(file(vec![join_world_step(), walk(10)])).expect("the run starts");
+
+    assert!(sup.world_refused(&title(), 1));
+
+    match end(&mut sup, &title(), false, false) {
+        Some(EndReason::Failed { step, why, .. }) => {
+            assert_eq!(step, Some(0));
+            assert!(why.contains("not in the game's world list") && why.contains("(result 1)"), "{why}");
+        }
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_live_world_start_failure_ends_the_session() {
+    let (mut sup, _clock) = supervisor();
+    let action = LiveAction::JoinWorld { world: "Test Flat".to_string(), level_id: "id1".to_string(), timeout: None };
+    sup.apply(Command::Live(action)).expect("the session starts");
+
+    assert!(sup.world_refused(&title(), 13));
+
+    assert_eq!(sup.status(&title()).state, RunState::Idle);
+}
+
+#[test]
+fn a_world_code_that_is_no_failure_changes_nothing() {
+    let (mut sup, _clock) = supervisor();
+    sup.apply(file(vec![join_world_step()])).expect("the run starts");
+    sup.on_frame(&title(), false, false);
+
+    assert!(!sup.world_refused(&title(), 0));
+    assert!(!sup.world_refused(&title(), 3));
+
+    assert_eq!(sup.status(&title()).state, RunState::Running);
+}
+
+#[test]
+fn a_world_start_code_does_not_fail_a_server_join_step() {
+    let (mut sup, _clock) = supervisor();
+    sup.apply(file(vec![join(600)])).expect("the run starts");
+    sup.on_frame(&title(), false, false);
+
+    assert!(!sup.world_refused(&title(), 1));
+
+    assert_eq!(sup.status(&title()).state, RunState::Running);
+}
+
+#[test]
+fn a_world_start_code_with_no_join_under_way_ends_nothing() {
+    let (mut sup, _clock) = supervisor();
+    assert!(!sup.world_refused(&title(), 1));
+    sup.apply(file(vec![walk(10)])).expect("the run starts");
+
+    assert!(!sup.world_refused(&world(), 1));
 
     assert_eq!(sup.status(&world()).state, RunState::Running);
 }

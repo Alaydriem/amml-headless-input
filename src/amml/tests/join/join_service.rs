@@ -3,12 +3,17 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use alaydriem_headless_input::join::JoinService;
-use headless_input_core::structs::JoinTarget;
+use headless_input_core::run::JoinAnswer;
+use headless_input_core::structs::{JoinRequest, JoinTarget, WorldTarget};
 
 use crate::support::fake_join_client::FakeJoinClient;
 
-fn target() -> Arc<JoinTarget> {
-    Arc::new(JoinTarget { host: "play.example.net".to_string(), address: Ipv4Addr::new(10, 0, 0, 2), port: 19133 })
+fn target() -> Arc<JoinRequest> {
+    Arc::new(JoinRequest::Server(JoinTarget {
+        host: "play.example.net".to_string(),
+        address: Ipv4Addr::new(10, 0, 0, 2),
+        port: 19133,
+    }))
 }
 
 // the instant every test's clock counts from
@@ -22,17 +27,17 @@ fn at(millis: u64) -> Instant {
 }
 
 // frames of a join step until the join call: the tab is asked, then the frames run to the end of the wait
-fn open_and_wait(service: &mut JoinService, client: &FakeJoinClient, target: &Arc<JoinTarget>) {
+fn open_and_wait(service: &mut JoinService, client: &FakeJoinClient, target: &Arc<JoinRequest>) {
     join_frame(service, client, target);
     join_frame_at(service, client, target, at(0) + JoinService::TAB_WAIT);
 }
 
 // one frame of a join step at the start of the clock: the frame asks for the join, then the service pumps
-fn join_frame(service: &mut JoinService, client: &FakeJoinClient, target: &Arc<JoinTarget>) {
+fn join_frame(service: &mut JoinService, client: &FakeJoinClient, target: &Arc<JoinRequest>) {
     join_frame_at(service, client, target, at(0));
 }
 
-fn join_frame_at(service: &mut JoinService, client: &FakeJoinClient, target: &Arc<JoinTarget>, now: Instant) {
+fn join_frame_at(service: &mut JoinService, client: &FakeJoinClient, target: &Arc<JoinRequest>, now: Instant) {
     service.request(Arc::clone(target));
     service.pump(client, now);
 }
@@ -320,11 +325,11 @@ fn a_new_target_with_no_gap_frame_asks_the_tab_again_and_waits_again() {
     assert_eq!((client.tabs(), client.joins().len()), (1, 1));
 
     // the first join failed back to the title; the next frame already asks for another target
-    let second = Arc::new(JoinTarget {
+    let second = Arc::new(JoinRequest::Server(JoinTarget {
         host: "other.example.net".to_string(),
         address: Ipv4Addr::new(10, 0, 0, 3),
         port: 19132,
-    });
+    }));
     join_frame_at(&mut service, &client, &second, at(3_000));
     assert_eq!((client.tabs(), client.joins().len()), (2, 1), "the tab is asked again for the new target");
     join_frame_at(&mut service, &client, &second, at(5_400));
@@ -390,7 +395,7 @@ fn a_failure_code_the_game_answers_with_is_reported_once() {
 
     client.answer_with(8);
     service.request(Arc::clone(&target));
-    assert_eq!(service.pump(&client, at(10)), Some(8));
+    assert_eq!(service.pump(&client, at(10)), Some(JoinAnswer::Server(8)));
 
     service.request(Arc::clone(&target));
     assert_eq!(service.pump(&client, at(20)), None);
@@ -421,4 +426,126 @@ fn a_code_left_from_an_earlier_join_is_not_reported_for_a_new_one() {
     service.request(Arc::clone(&target));
     assert_eq!(service.pump(&client, at(10)), None);
     assert_eq!(client.joins().len(), 1);
+}
+
+fn world_target(level_id: &str) -> Arc<JoinRequest> {
+    Arc::new(JoinRequest::World(WorldTarget { name: "Test Flat".to_string(), level_id: level_id.to_string() }))
+}
+
+#[test]
+fn world_join_is_asked_once_at_the_title() {
+    let client = FakeJoinClient::new("start_screen");
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    for _ in 0..10 {
+        join_frame(&mut service, &client, &target);
+    }
+    assert_eq!(client.worlds(), ["id1".to_string()]);
+    assert!(client.joins().is_empty());
+}
+
+#[test]
+fn world_join_is_not_asked_off_the_title() {
+    let client = FakeJoinClient::new("hud_screen");
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    join_frame(&mut service, &client, &target);
+    client.show("start_screen");
+    client.set_in_game(true);
+    join_frame(&mut service, &client, &target);
+    client.set_in_game(false);
+    client.set_primary_ready(false);
+    join_frame(&mut service, &client, &target);
+    assert!(client.worlds().is_empty());
+}
+
+#[test]
+fn world_join_skips_the_servers_tab() {
+    let client = FakeJoinClient::new("start_screen");
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    join_frame(&mut service, &client, &target);
+    join_frame_at(&mut service, &client, &target, at(0) + JoinService::TAB_WAIT);
+    assert_eq!(client.tabs(), 0);
+    assert_eq!(client.events(), ["world"]);
+}
+
+#[test]
+fn a_new_world_request_asks_again() {
+    let client = FakeJoinClient::new("start_screen");
+    let mut service = JoinService::new();
+    let first = world_target("id1");
+    join_frame(&mut service, &client, &first);
+    join_frame(&mut service, &client, &first);
+    let second = world_target("id1");
+    join_frame(&mut service, &client, &second);
+    join_frame(&mut service, &client, &second);
+    assert_eq!(client.worlds().len(), 2);
+}
+
+#[test]
+fn a_world_request_no_frame_renews_ends_and_asks_again_when_renewed() {
+    let client = FakeJoinClient::new("start_screen");
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    join_frame(&mut service, &client, &target);
+    service.pump(&client, at(0));
+    join_frame(&mut service, &client, &target);
+    assert_eq!(client.worlds().len(), 2);
+}
+
+#[test]
+fn not_ready_asks_again_on_a_later_frame() {
+    let client = FakeJoinClient::new("start_screen");
+    client.answer_world_next(Some(3));
+    client.answer_world_next(Some(3));
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    for _ in 0..2 {
+        service.request(Arc::clone(&target));
+        assert_eq!(service.pump(&client, at(0)), None);
+    }
+    assert_eq!(client.worlds().len(), 2);
+    join_frame(&mut service, &client, &target);
+    join_frame(&mut service, &client, &target);
+    assert_eq!(client.worlds().len(), 3, "the third call was taken, so no fourth");
+}
+
+#[test]
+fn a_game_that_did_not_get_called_asks_again() {
+    let client = FakeJoinClient::new("start_screen");
+    client.answer_world_next(None);
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    join_frame(&mut service, &client, &target);
+    join_frame(&mut service, &client, &target);
+    join_frame(&mut service, &client, &target);
+    assert_eq!(client.worlds().len(), 2);
+}
+
+#[test]
+fn another_non_zero_code_answers_a_world_failure_once() {
+    let client = FakeJoinClient::new("start_screen");
+    client.answer_world_next(Some(1));
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    service.request(Arc::clone(&target));
+    assert_eq!(service.pump(&client, at(0)), Some(JoinAnswer::World(1)));
+    service.request(Arc::clone(&target));
+    assert_eq!(service.pump(&client, at(10)), None);
+    assert_eq!(client.worlds().len(), 1);
+}
+
+#[test]
+fn code_zero_is_taken_and_follows_the_screens_with_no_answer() {
+    let client = FakeJoinClient::new("start_screen");
+    client.answer_with(8);
+    let mut service = JoinService::new();
+    let target = world_target("id1");
+    for screen in ["start_screen", "start_local_world_progress", "hud_screen"] {
+        client.show(screen);
+        service.request(Arc::clone(&target));
+        assert_eq!(service.pump(&client, at(0)), None);
+    }
+    assert_eq!(client.worlds().len(), 1);
 }

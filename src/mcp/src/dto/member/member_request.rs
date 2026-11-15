@@ -11,4 +11,8 @@ pub enum MemberRequest {
     Stop,
     Status,
     Live(LiveActionDto),
+    // the local worlds of the instance
+    ListWorlds,
+    // an image of the game; `layers` is "mods" or "game"
+    Screenshot { layers: Option<String>, max_width: Option<u32> },
 }

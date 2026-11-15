@@ -9,4 +9,6 @@ pub enum Refusal {
     Ending,
     #[error("no run or live session is active")]
     NothingActive,
+    #[error("too many presses are waiting; try again after the game ticks")]
+    PressQueueFull,
 }

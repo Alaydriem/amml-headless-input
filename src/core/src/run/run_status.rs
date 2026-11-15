@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::{RunId, RunResult, RunState};
 use crate::player::StepCursor;
 
-// What `status` reports: the active run, the last result and where the player is. Cloning it copies no text.
+// What `status` reports: the active run, the last result and where the player is. Cloning it copies the screen name only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunStatus {
     pub state: RunState,
@@ -20,4 +20,6 @@ pub struct RunStatus {
     pub pitch: f32,
     // None while the dimension is not known
     pub dimension: Option<i32>,
+    // the screen the game shows, as `ScreenKind::name` gives it
+    pub screen: String,
 }

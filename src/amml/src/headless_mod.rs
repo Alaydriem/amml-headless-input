@@ -44,12 +44,13 @@ impl HeadlessMod {
 
     // the game reads beyond the hooks. `ClientInstance.gameCallbacksOffset` is required: the client tick finds its
     // client through it. A missing optional entry turns off only its capability
-    pub fn wanted() -> [(EntryId, EntryNeed); 24] {
+    pub fn wanted() -> [(EntryId, EntryNeed); 26] {
         const POSITION: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::POSITION };
         const ROTATION: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::ROTATION };
         const DIMENSION: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::DIMENSION };
         const JOIN: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::JOIN };
         const TAB: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::SERVERS_TAB };
+        const JOIN_WORLD: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::JOIN_WORLD };
         const LEAVE: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::LEAVE };
         const COMMAND: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::COMMAND };
         [
@@ -77,6 +78,8 @@ impl HeadlessMod {
             (HeadlessEntry::PACKET_SENDER_SEND, COMMAND),
             (HeadlessEntry::COMMAND_REQUEST_PACKET_M_COMMAND, COMMAND),
             (HeadlessEntry::COMMAND_REQUEST_PACKET_SIZE, COMMAND),
+            (HeadlessEntry::LOCAL_WORLD_STARTER_START_LOCAL_WORLD, JOIN_WORLD),
+            (HeadlessEntry::WORLD_SYSTEM_LOCAL_WORLD_STARTER, JOIN_WORLD),
         ]
     }
 

@@ -156,3 +156,107 @@ async fn a_control_file_with_an_unresolvable_join_is_refused_before_it_runs() {
     assert!(!harness.fake.calls().iter().any(|call| call.starts_with("run_control_file")));
     harness.stop().await;
 }
+
+struct WorldFixture;
+
+impl WorldFixture {
+    fn port() -> FakePort {
+        FakePort::with_worlds(vec![headless_input_core::structs::WorldEntry {
+            level_id: "id1".to_owned(),
+            name: "Test Flat".to_owned(),
+            storage: headless_input_core::structs::WorldStorage::User,
+            owner: "owner".to_owned(),
+            last_played: Some(0),
+        }])
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn join_world_tool_routes_to_the_named_instance() {
+    let harness = Harness::start(FakePort::plain()).await;
+    let beta = Arc::new(WorldFixture::port());
+    let member = harness.join("beta", Arc::clone(&beta)).await;
+
+    let result = harness.call("join_world", json!({ "world": "test flat", "instance": "beta" })).await;
+
+    assert_ne!(result.is_error, Some(true), "{}", Harness::text(&result));
+    assert!(beta.calls().iter().any(|call| call.starts_with("live JoinWorld") && call.contains("\"id1\"")));
+    assert!(!harness.fake.calls().iter().any(|call| call.starts_with("live")), "{:?}", harness.fake.calls());
+    let unknown = harness.call("join_world", json!({ "world": "Nope", "instance": "beta" })).await;
+    assert_eq!(unknown.is_error, Some(true));
+    assert_eq!(Harness::text(&unknown), "no world named \"Nope\"");
+    Harness::stop_node(member).await;
+    harness.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_worlds_tool_routes_to_the_named_instance() {
+    let harness = Harness::start(FakePort::plain()).await;
+    let beta = Arc::new(WorldFixture::port());
+    let member = harness.join("beta", Arc::clone(&beta)).await;
+
+    let result = harness.call("list_worlds", json!({ "instance": "beta" })).await;
+
+    assert_ne!(result.is_error, Some(true), "{}", Harness::text(&result));
+    let listed = Reply::json(&result);
+    assert_eq!(listed[0]["name"], "Test Flat");
+    assert_eq!(listed[0]["level_id"], "id1");
+    assert_eq!(listed[0]["storage"], "user");
+    assert_eq!(listed[0]["last_played"], "1970-01-01T00:00:00Z");
+    assert!(!harness.fake.calls().contains(&"worlds".to_owned()));
+    Harness::stop_node(member).await;
+    harness.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn screenshot_tool_routes_to_the_named_instance() {
+    let harness = Harness::start(FakePort::plain()).await;
+    let shot = headless_input_core::structs::ScreenshotShot {
+        png: vec![1, 2, 3],
+        path: std::path::PathBuf::from("shots/a.png"),
+        width: 64,
+        height: 36,
+        source_width: 128,
+        source_height: 72,
+        layer: headless_input_core::structs::ScreenshotLayer::Mods,
+    };
+    let beta = Arc::new(FakePort::with_screenshot(shot));
+    let member = harness.join("beta", Arc::clone(&beta)).await;
+
+    let result = harness.call("screenshot", json!({ "instance": "beta", "max_width": 64 })).await;
+
+    assert_ne!(result.is_error, Some(true), "{}", Harness::text(&result));
+    assert!(beta.calls().contains(&"screenshot".to_owned()));
+    assert!(!harness.fake.calls().contains(&"screenshot".to_owned()));
+    let image = result.content.iter().find_map(|block| block.as_image()).expect("an image block");
+    assert_eq!(image.mime_type, "image/png");
+    assert_eq!(Reply::json(&result)["layers"], "mods");
+    Harness::stop_node(member).await;
+    harness.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_screenshot_over_two_megabytes_crosses_the_hub() {
+    let harness = Harness::start(FakePort::plain()).await;
+    let png: Vec<u8> = (0..3_000_000u32).map(|index| (index % 251) as u8).collect();
+    let shot = headless_input_core::structs::ScreenshotShot {
+        png: png.clone(),
+        path: std::path::PathBuf::from("shots/big.png"),
+        width: 3840,
+        height: 2160,
+        source_width: 3840,
+        source_height: 2160,
+        layer: headless_input_core::structs::ScreenshotLayer::Game,
+    };
+    let beta = Arc::new(FakePort::with_screenshot(shot));
+    let member = harness.join("beta", Arc::clone(&beta)).await;
+
+    let result = harness.call("screenshot", json!({ "instance": "beta", "max_width": 3840 })).await;
+
+    assert_ne!(result.is_error, Some(true), "{}", Harness::text(&result));
+    let image = result.content.iter().find_map(|block| block.as_image()).expect("an image block");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &image.data).unwrap();
+    assert_eq!(bytes, png);
+    Harness::stop_node(member).await;
+    harness.stop().await;
+}

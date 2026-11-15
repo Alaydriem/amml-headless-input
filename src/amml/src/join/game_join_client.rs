@@ -2,10 +2,10 @@ use std::ffi::c_void;
 
 use amml_game::{ClientInstance, EntryId, GameEntries, GameHeap, RawObject};
 use amml_msvc::{MemberCall, MsvcString};
-use headless_input_core::structs::JoinTarget;
+use headless_input_core::structs::{JoinTarget, WorldTarget};
 
 use crate::game::{GameStrings, GameText, HeadlessEntry};
-use crate::join::{JoinClient, JoinResultCallback, ServerJoinerLocator};
+use crate::join::{JoinClient, JoinResultCallback, LocalWorldStarterLocator, ServerJoinerLocator};
 
 // The game's client behind the `JoinClient` trait: each call reads the code pointer of its entry and calls it. A call
 // whose entry is off does nothing and answers no. Game thread
@@ -38,6 +38,19 @@ impl<'a> GameJoinClient<'a> {
         // SAFETY: the client returned a non-null IMinecraftGame*, a live MinecraftGame, and the entries describe the
         // chain from it to the joiner. The call is on the game thread
         unsafe { ServerJoinerLocator::locate(game, owner_slot, joiner_at, member_at) }
+    }
+}
+
+impl GameJoinClient<'_> {
+    // the game's LocalWorldStarter; None when an entry is off or a step of the chain is null
+    #[allow(unsafe_code)]
+    fn world_starter(&self) -> Option<*mut c_void> {
+        let owner_slot = self.entries.get(HeadlessEntry::MINECRAFT_GAME_GET_SERVER_WORLD_JOINER_OWNER)?;
+        let starter_at = self.entries.get(HeadlessEntry::WORLD_SYSTEM_LOCAL_WORLD_STARTER)?;
+        let game = self.client.minecraft_game()?;
+        // SAFETY: the client returned a non-null IMinecraftGame*, a live MinecraftGame, and the entries describe the
+        // chain from it to the starter. The call is on the game thread
+        unsafe { LocalWorldStarterLocator::locate(game, owner_slot, starter_at) }
     }
 }
 
@@ -191,5 +204,31 @@ impl JoinClient for GameJoinClient<'_> {
             name_text.release(&heap);
         }
         true
+    }
+
+    // the game's own local world start, as the Play screen calls it: the result comes back at once. A null step of the
+    // chain to the starter gives no call
+    #[allow(unsafe_code)]
+    fn join_world(&self, target: &WorldTarget) -> Option<i32> {
+        let starter = self.world_starter()?;
+        let function = self.entries.get(HeadlessEntry::LOCAL_WORLD_STARTER_START_LOCAL_WORLD)?;
+        // an address of 0 is no function: never made into a function pointer
+        let function = usize::try_from(function).ok()?;
+        if function == 0 {
+            return None;
+        }
+        let heap = GameHeap::msvc()?;
+        let mut level_id = GameStrings::heap_string(&heap, &target.level_id)?;
+        // SAFETY: the entry is `World::StartLocalWorldResult World::LocalWorldStarter::startLocalWorld(const
+        // World::WorldID&)`: this in rcx, a pointer to the WorldID in rdx (one std::string at offset 0), and the
+        // 32-bit result enum in eax. The game only reads the id
+        let start: unsafe extern "C" fn(*mut c_void, *const MsvcString) -> u32 =
+            unsafe { std::mem::transmute(function) };
+        // SAFETY: the starter is live and on the game thread (the caller), and the id string is live
+        let result = unsafe { start(starter, &raw const level_id) };
+        // SAFETY: the string came from `GameStrings::heap_string` with this heap and is not used again; the call does not
+        // keep it
+        unsafe { level_id.release(&heap) };
+        Some(i32::from_ne_bytes(result.to_ne_bytes()))
     }
 }

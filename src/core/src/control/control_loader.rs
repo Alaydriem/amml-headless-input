@@ -13,12 +13,14 @@ use crate::structs::Capabilities;
 pub struct ControlLoader;
 
 impl ControlLoader {
-    // `resolve` gives the IPv4 address of a join_server host, or None when it has none
+    // `resolve` gives the IPv4 address of a join_server host, or None when it has none; `find_world` gives the level
+    // id of a join_world world text, or None when no world has that name
     pub fn load(
         text: &str,
         defaults: &RunDefaults,
         capabilities: &Capabilities,
         resolve: impl Fn(&str) -> Option<Ipv4Addr>,
+        find_world: impl Fn(&str) -> Option<String>,
     ) -> Result<ControlFile, ControlError> {
         if text.len() > ControlFile::MAX_BYTES {
             return Err(ControlError::new(None, format!("the file is over {} bytes", ControlFile::MAX_BYTES)));
@@ -30,7 +32,7 @@ impl ControlLoader {
         let index = LineIndex::new(text);
         let name = Self::name(&body, &index)?;
         let goal_timeout = Self::goal_timeout(&body, &index, defaults)?;
-        let steps = StepConverter::new(&index, goal_timeout, *capabilities).steps(&body, 0, &resolve)?;
+        let steps = StepConverter::new(&index, goal_timeout, *capabilities).steps(&body, 0, &resolve, &find_world)?;
         let measure = StepMeasure::of(&steps);
         if measure.steps > ControlFile::MAX_STEPS {
             return Err(ControlError::new(

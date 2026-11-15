@@ -2,9 +2,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use alaydriem_headless_input::services::HeadlessRuntime;
+use amm_abi::types::AmmStatus;
 use amm_client::test_support::FakeTable;
+use amm_core::structs::event::ModEvent;
 use headless_input_core::control::Ticks;
 use headless_input_core::run::{LiveAction, RunDefaults, RunState};
+use headless_input_core::structs::{ScreenshotLayer, ScreenshotRequest, ScreenshotRetention};
 use headless_input_mcp::port::{HeadlessPort, PortError};
 
 use crate::support::{RunHarness, RuntimeDirs};
@@ -67,4 +70,74 @@ fn defaults_follow_the_settings() {
 
     assert_eq!(port.defaults(), RunDefaults::new(&runtime.config()));
     assert_eq!(port.defaults().goal_timeout, Ticks(200));
+}
+
+#[test]
+fn worlds_reads_the_instance_folders() {
+    let temp = tempfile::tempdir().unwrap();
+    let game = temp.path().join("instances").join("inst");
+    let mod_dir = game.join("mods").join("amml").join("@alaydriem").join("headless-input");
+    let data = game.join("appdata");
+    std::fs::create_dir_all(game.join("amml")).unwrap();
+    std::fs::write(game.join("amml").join("instance.hcl"), "data_dir = \"appdata\"\n").unwrap();
+    let level = data
+        .join("Minecraft Bedrock")
+        .join("Users")
+        .join("123")
+        .join("games")
+        .join("com.mojang")
+        .join("minecraftWorlds")
+        .join("id1");
+    std::fs::create_dir_all(&level).unwrap();
+    std::fs::write(level.join("level.dat"), b"x").unwrap();
+    std::fs::write(level.join("levelname.txt"), "Test Flat").unwrap();
+    let mut dirs = RuntimeDirs::dirs();
+    dirs.mod_dir = mod_dir;
+    let runtime = HeadlessRuntime::new(&dirs);
+
+    let catalog = runtime.local_port(RunHarness::WAIT).worlds().unwrap();
+
+    assert_eq!(catalog.find("Test Flat").unwrap().level_id, "id1");
+}
+
+#[test]
+fn screenshot_prepares_and_prunes() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut dirs = RuntimeDirs::dirs();
+    dirs.data_dir = temp.path().join("data");
+    let shots = dirs.data_dir.join("screenshots");
+    std::fs::create_dir_all(&shots).unwrap();
+    for stamp in 1..=ScreenshotRetention::MAX_SCREENSHOTS as u64 {
+        std::fs::write(shots.join(ScreenshotRetention::file_name(stamp)), b"x").unwrap();
+    }
+    FakeTable::set_screenshot_answer(AmmStatus::Ok, 4);
+    let runtime = HeadlessRuntime::new(&dirs);
+    runtime.enable_link();
+    runtime.tick_with(|| Ok(FakeTable::table()));
+    let port = runtime.local_port(RunHarness::WAIT);
+    let request = ScreenshotRequest { layer: ScreenshotLayer::Mods, max_width: 1280 };
+    let asking = std::thread::spawn(move || port.screenshot(request));
+
+    let deadline = std::time::Instant::now() + RunHarness::WAIT;
+    while FakeTable::with(|state| state.screenshot_requests.is_empty()) {
+        assert!(std::time::Instant::now() < deadline, "the request did not reach the manager");
+        runtime.tick_with(|| Ok(FakeTable::table()));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let written = PathBuf::from(FakeTable::with(|state| state.screenshot_requests[0].clone()));
+    image::RgbaImage::from_pixel(2560, 1440, image::Rgba([1, 2, 3, 255])).save(&written).unwrap();
+    FakeTable::push_event(ModEvent::ScreenshotWritten { sequence: 4, ok: true });
+    while !asking.is_finished() {
+        assert!(std::time::Instant::now() < deadline, "the screenshot was not answered");
+        runtime.tick_with(|| Ok(FakeTable::table()));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let shot = asking.join().unwrap().unwrap();
+
+    assert_eq!((shot.width, shot.height), (1280, 720));
+    assert_eq!(shot.path, written);
+    assert_eq!(written.parent().unwrap(), shots);
+    assert_eq!(std::fs::read_dir(&shots).unwrap().count(), ScreenshotRetention::MAX_SCREENSHOTS);
+    assert!(!shots.join(ScreenshotRetention::file_name(1)).exists());
 }

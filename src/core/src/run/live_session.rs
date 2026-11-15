@@ -1,5 +1,5 @@
-use super::LiveAction;
-use crate::control::{InputKey, Step, Ticks};
+use super::{LiveAction, TapQueue};
+use crate::control::{InputKey, Step, TapKey, Ticks};
 use crate::player::step_progress::StepProgress;
 use crate::player::step_run::StepRun;
 use crate::player::{InputFrame, PlayerView, PointerOp, PointerOps};
@@ -14,6 +14,9 @@ pub(crate) struct LiveSession {
     pointer: Option<(Step, StepRun)>,
     travel: Option<(Step, StepRun)>,
     hotbar: Option<u8>,
+    taps: TapQueue,
+    // a tap went out on the last tick, so this tick only lets it go
+    tapped_last: bool,
     // why the last join or leave failed, until the supervisor takes it
     failure: Option<&'static str>,
     // pointer events for the next tick: scrolls and the release of a replaced hold
@@ -30,12 +33,19 @@ impl LiveSession {
             pointer: None,
             travel: None,
             hotbar: None,
+            taps: TapQueue::new(),
+            tapped_last: false,
             failure: None,
             pending: PointerOps::new(),
         }
     }
 
     // `Release` gives no input; the supervisor ends the session for it
+    // false for a press while the press queue is full; `apply` would drop it
+    pub fn accepts(&self, action: &LiveAction) -> bool {
+        !matches!(action, LiveAction::Press { .. }) || !self.taps.is_full()
+    }
+
     pub fn apply(&mut self, action: LiveAction, goal_timeout: Ticks) {
         match action {
             LiveAction::Hold { keys, ticks } => {
@@ -63,12 +73,19 @@ impl LiveSession {
                 self.pointer = Some((Step::Pointer { action, hold_ticks }, StepRun::new()));
             }
             LiveAction::Hotbar { slot } => self.hotbar = Some(slot),
+            LiveAction::Press { key } => {
+                self.taps.push(key);
+            }
             LiveAction::Scroll { steps } => {
                 self.pending.push(PointerOp::Scroll(steps));
             }
             LiveAction::JoinServer { host, address, port, timeout } => {
                 let timeout = timeout.unwrap_or(goal_timeout);
                 self.travel = Some((Step::JoinServer { host, address, port, timeout }, StepRun::new()));
+            }
+            LiveAction::JoinWorld { world, level_id, timeout } => {
+                let timeout = timeout.unwrap_or(goal_timeout);
+                self.travel = Some((Step::JoinWorld { world, level_id, timeout }, StepRun::new()));
             }
             LiveAction::LeaveWorld { timeout } => {
                 let timeout = timeout.unwrap_or(goal_timeout);
@@ -93,6 +110,8 @@ impl LiveSession {
         }
         self.pending.clear();
         frame.hotbar = self.hotbar.take();
+        frame.tap = if self.tapped_last { None } else { self.taps.pop() };
+        self.tapped_last = frame.tap.is_some();
         Self::drive(&mut self.rotation, view, &mut frame);
         Self::drive(&mut self.pointer, view, &mut frame);
         self.drive_travel(view, &mut frame);

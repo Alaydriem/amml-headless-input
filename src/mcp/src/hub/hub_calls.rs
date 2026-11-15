@@ -91,7 +91,7 @@ impl HubCalls {
             let resolver = Arc::clone(&self.resolver);
             let task = tokio::task::spawn_blocking(move || match check {
                 None => Err(PortError::UnknownInstance(id.to_string())),
-                Some(features) => resolver.load_control(&text, &defaults, &features).map(|_| ()),
+                Some(features) => resolver.check_control(&text, &defaults, &features),
             });
             checks.push((name, task));
         }
@@ -117,7 +117,7 @@ impl HubCalls {
         if matches!(action, LiveActionDto::JoinServer { .. }) {
             let probe = action.clone();
             let resolver = Arc::clone(&self.resolver);
-            tokio::task::spawn_blocking(move || resolver.live(&probe).map(|_| ()))
+            tokio::task::spawn_blocking(move || resolver.live(&probe, |world| Some(world.to_owned())).map(|_| ()))
                 .await
                 .unwrap_or_else(|_| Err(PortError::Io("the host lookup failed".to_owned())))?;
         }
@@ -189,6 +189,12 @@ impl HubCalls {
                 serde_json::to_value(RunStarted { run }).map_err(|error| PortError::Io(error.to_string()))
             }
             MemberReply::Done => Ok(json!({ "ok": true })),
+            MemberReply::Worlds(worlds) => {
+                serde_json::to_value(worlds).map_err(|error| PortError::Io(error.to_string()))
+            }
+            MemberReply::Screenshot(shot) => {
+                serde_json::to_value(*shot).map_err(|error| PortError::Io(error.to_string()))
+            }
             MemberReply::Status(status) => {
                 serde_json::to_value(*status).map_err(|error| PortError::Io(error.to_string()))
             }

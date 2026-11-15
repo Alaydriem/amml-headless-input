@@ -33,10 +33,11 @@ impl StepMeasure {
             | Step::LookAt { ticks, .. }
             | Step::Wait { ticks } => fixed(u64::from(ticks.get())),
             Step::Pointer { hold_ticks, .. } => fixed(u64::from(*hold_ticks).max(1)),
-            Step::Hotbar { .. } | Step::Scroll { .. } | Step::Command { .. } => fixed(1),
+            Step::Hotbar { .. } | Step::Press { .. } | Step::Scroll { .. } | Step::Command { .. } => fixed(1),
             Step::WalkTo { .. }
             | Step::WalkUntilDimension { .. }
             | Step::JoinServer { .. }
+            | Step::JoinWorld { .. }
             | Step::LeaveWorld { .. } => Self { steps: 1, ticks: None },
             Step::Repeat { count, steps, .. } => {
                 let inner = Self::of(steps);

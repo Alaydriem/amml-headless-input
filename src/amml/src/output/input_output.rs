@@ -1,5 +1,5 @@
 use amm_core::structs::input::{PointerOp as ManagerPointerOp, TurnAxis};
-use headless_input_core::control::{InputKey, PointerAction};
+use headless_input_core::control::{InputKey, PointerAction, TapKey};
 use headless_input_core::player::{InputFrame, KeySet, PointerOp};
 
 use crate::errors::OutputError;
@@ -7,16 +7,18 @@ use crate::output::{KeyCodes, LeaseHolder};
 use crate::traits::ManagerPort;
 
 // Sends an `InputFrame` to the manager as changes: a key or button goes down or up only when the frame differs from
-// what the mod holds, a hotbar slot is tapped (down on its frame, up on the next), a scroll turns the wheel, and a
-// rotation turns the look. The record holds only what the manager took, so `release_all` sends an up for each thing
-// still down. The look is turned through the manager as Turn actions: the output keeps the look it commanded last and
-// sends the difference to the wanted look. Nothing allocates
+// what the mod holds, a hotbar slot and a pressed key are tapped (down on its frame, up on the next), a scroll turns
+// the wheel, and a rotation turns the look. The record holds only what the manager took, so `release_all` sends an up
+// for each thing still down. The look is turned through the manager as Turn actions: the output keeps the look it
+// commanded last and sends the difference to the wanted look. Nothing allocates
 pub struct InputOutput {
     keys: KeySet,
     attack: bool,
     use_item: bool,
     // the hotbar key pressed on the last frame, let go on this one
     hotbar: Option<u32>,
+    // the pressed key's code from the last frame, let go on this one
+    tap: Option<u32>,
     // the (yaw, pitch) the last turn commanded, in degrees; None before the first rotation of a step
     look: Option<(f32, f32)>,
 }
@@ -29,7 +31,7 @@ impl InputOutput {
     const MILLIDEGREES: f32 = 1000.0;
 
     pub fn new() -> Self {
-        Self { keys: KeySet::new(), attack: false, use_item: false, hotbar: None, look: None }
+        Self { keys: KeySet::new(), attack: false, use_item: false, hotbar: None, tap: None, look: None }
     }
 
     // the keys, the hotbar tap and the pointer events of one frame, then its rotation. On the first send the manager
@@ -46,6 +48,7 @@ impl InputOutput {
     ) -> Result<(), OutputError> {
         self.send_keys(frame.keys, port)?;
         self.send_hotbar(frame.hotbar, port)?;
+        self.send_tap(frame.tap, port)?;
         for op in frame.pointer.as_slice() {
             self.send_pointer(*op, port)?;
         }
@@ -61,7 +64,7 @@ impl InputOutput {
         wrapped - 180.0
     }
 
-    // an up for every held key, hotbar key and button; a refused up is dropped, so the record ends empty
+    // an up for every held key, hotbar key, pressed key and button; a refused up is dropped, so the record ends empty
     pub fn release_all(&mut self, port: &impl ManagerPort) {
         for key in InputKey::ALL {
             if self.keys.contains(key) {
@@ -69,6 +72,9 @@ impl InputOutput {
             }
         }
         if let Some(vk) = self.hotbar {
+            let _ = port.send_key(vk, false);
+        }
+        if let Some(vk) = self.tap {
             let _ = port.send_key(vk, false);
         }
         for action in [PointerAction::Attack, PointerAction::Use] {
@@ -150,6 +156,18 @@ impl InputOutput {
         if let Some(vk) = slot.and_then(KeyCodes::hotbar) {
             port.send_key(vk, true)?;
             self.hotbar = Some(vk);
+        }
+        Ok(())
+    }
+
+    fn send_tap(&mut self, tap: Option<TapKey>, port: &impl ManagerPort) -> Result<(), OutputError> {
+        if let Some(vk) = self.tap {
+            port.send_key(vk, false)?;
+            self.tap = None;
+        }
+        if let Some(key) = tap {
+            port.send_key(key.vk(), true)?;
+            self.tap = Some(key.vk());
         }
         Ok(())
     }

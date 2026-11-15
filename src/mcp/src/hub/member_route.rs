@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use tokio_util::sync::CancellationToken;
@@ -27,6 +27,10 @@ impl MemberRoute {
     pub const HEARTBEAT: &'static str = "/member/heartbeat";
     pub const UNREGISTER: &'static str = "/member/unregister";
     pub const POLL_WAIT: Duration = Duration::from_secs(25);
+    // Body limit of the reply route only. The largest reply is a screenshot at the widest `max_width` (3840): a
+    // 3840 x 2160 RGBA image is 33 177 600 bytes before compression, a PNG of it is at most a little over that,
+    // and base64 adds 4/3 (about 44.3 MB); 48 MiB leaves room for the JSON around it.
+    pub const MAX_REPLY_BYTES: usize = 48 * 1024 * 1024;
 
     pub fn new(forwarder: Arc<Forwarder>, cancel: CancellationToken) -> Self {
         Self { forwarder, cancel }
@@ -41,7 +45,7 @@ impl MemberRoute {
         axum::Router::new()
             .route(Self::REGISTER, axum::routing::post(Self::register))
             .route(Self::POLL, axum::routing::get(Self::poll))
-            .route(Self::REPLY, axum::routing::post(Self::reply))
+            .route(Self::REPLY, axum::routing::post(Self::reply).layer(DefaultBodyLimit::max(Self::MAX_REPLY_BYTES)))
             .route(Self::HEARTBEAT, axum::routing::post(Self::heartbeat))
             .route(Self::UNREGISTER, axum::routing::post(Self::unregister))
             .with_state(route)

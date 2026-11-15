@@ -7,6 +7,11 @@ fn hud_screen_is_in_world() {
 }
 
 #[test]
+fn hud_crosshair_screen_is_in_world() {
+    assert_eq!(ScreenReader::kind("hud_crosshair_screen", &ScreenKind::Title, true), ScreenKind::InWorld);
+}
+
+#[test]
 fn start_screen_is_title() {
     assert_eq!(ScreenReader::kind("start_screen", &ScreenKind::InWorld, false), ScreenKind::Title);
 }
