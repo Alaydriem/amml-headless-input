@@ -1,5 +1,5 @@
 use super::{LiveAction, TapQueue};
-use crate::control::{InputKey, Step, TapKey, Ticks};
+use crate::control::{InputKey, Step, Ticks};
 use crate::player::step_progress::StepProgress;
 use crate::player::step_run::StepRun;
 use crate::player::{InputFrame, PlayerView, PointerOp, PointerOps};

@@ -7,6 +7,8 @@ pub struct ScreenReader;
 impl ScreenReader {
     // the HUD: the player is in a world with no menu open
     pub const HUD: &'static str = "hud_screen";
+    // the HUD with the crosshair layer, shown after a dimension change
+    pub const HUD_CROSSHAIR: &'static str = "hud_crosshair_screen";
     // the title screen
     pub const START: &'static str = "start_screen";
     // the Ore UI menus are one page named by its address, for example `ui://./hbui/index.html`
@@ -26,7 +28,7 @@ impl ScreenReader {
     pub fn kind(name: &str, previous: &ScreenKind, in_game: bool) -> ScreenKind {
         match name {
             Self::TOAST => previous.clone(),
-            Self::HUD => ScreenKind::InWorld,
+            Self::HUD | Self::HUD_CROSSHAIR => ScreenKind::InWorld,
             Self::START => ScreenKind::Title,
             _ if Self::is_title(name, in_game) => ScreenKind::Title,
             _ if name.contains(Self::PROGRESS_MARK) => ScreenKind::Loading,
