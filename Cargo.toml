@@ -27,3 +27,29 @@ headless-input-mcp = { path = "src/mcp" }
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+
+# Tests build in the dev profile. Unoptimized, the screenshot decode, scale and encode take seconds and pass the
+# test deadlines on slow CI runners. Release builds are not changed.
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.adler2]
+opt-level = 3
+
+[profile.dev.package.simd-adler32]
+opt-level = 3
