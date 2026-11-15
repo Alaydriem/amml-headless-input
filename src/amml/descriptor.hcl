@@ -1,7 +1,7 @@
 namespace    = "alaydriem"
 name         = "headless-input"
 display_name = "Headless Input"
-version      = "26.62.0"
+version      = "26.63.4"
 author       = "Alaydriem"
 config_path  = "config.hcl"
 
