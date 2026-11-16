@@ -11,24 +11,18 @@ license = "BSD-3-Clause"
 publish = false
 
 [workspace.dependencies]
-amm-abi = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4" }
-amm-client = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4", default-features = false }
-amm-core = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.4" }
-amml-sdk = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
-amml-game = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
-amml-msvc = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.4" }
+amm-abi = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.6" }
+amm-client = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.6", default-features = false }
+amm-core = { git = "https://github.com/Alaydriem/amml-modmanager.git", tag = "26.63.6" }
+amml-sdk = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.6" }
+amml-game = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.6" }
+amml-msvc = { git = "https://github.com/Alaydriem/amml.git", tag = "26.63.6" }
 curia = "=0.2.2"
 hcl-rs = "=0.19.8"
 serde = { version = "1.0.229", features = ["derive"] }
 socket2 = "=0.6.5"
 headless-input-core = { path = "src/core" }
 headless-input-mcp = { path = "src/mcp" }
-
-# Temporary: the manager's send_move (ABI 2.4) exists only in the local checkout. Remove when a manager tag ships it.
-[patch."https://github.com/Alaydriem/amml-modmanager.git"]
-amm-abi = { path = "../modmanager/crates/amm-abi" }
-amm-client = { path = "../modmanager/crates/amm-client" }
-amm-core = { path = "../modmanager/crates/amm-core" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
