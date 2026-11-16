@@ -7,7 +7,7 @@ use amm_abi::types::AmmStatus;
 use amm_client::test_support::FakeTable;
 use amm_core::structs::descriptor::Capability;
 use amm_core::structs::event::ModEvent;
-use amm_core::structs::input::{PointerButton, PointerOp};
+use amm_core::structs::input::{MoveIntent, PointerButton, PointerOp};
 use amm_core::structs::lease::AcquireOutcome;
 use amm_core::structs::registry::ModIndex;
 
@@ -109,4 +109,32 @@ fn the_manager_letting_go_of_the_fake_keys_is_not_the_panel() {
     link.drain();
 
     assert!(!link.panel_open());
+}
+
+#[test]
+fn a_key_down_before_the_controller_is_known_or_into_a_full_queue_has_its_own_error() {
+    let link = link();
+
+    FakeTable::with(|state| state.send_key_status = AmmStatus::NotReady);
+    assert_eq!(link.send_key(0x45, true), Err(OutputError::NotReady));
+
+    FakeTable::with(|state| state.send_key_status = AmmStatus::Busy);
+    assert_eq!(link.send_key(0x45, true), Err(OutputError::Busy));
+}
+
+#[test]
+fn a_move_with_no_local_player_is_not_ready() {
+    let link = link();
+    FakeTable::with(|state| state.send_move_status = AmmStatus::NotReady);
+
+    let intent = MoveIntent { forward: 1.0, ..MoveIntent::ZERO };
+    assert_eq!(link.send_move(intent), Err(OutputError::NotReady));
+}
+
+#[test]
+fn a_manager_without_the_move_command_answers_unsupported() {
+    let link = HeadlessLink::from_link(FakeTable::link_without_frame_on(FakeTable::api_minor_3())).unwrap();
+
+    let intent = MoveIntent { forward: 1.0, ..MoveIntent::ZERO };
+    assert_eq!(link.send_move(intent), Err(OutputError::Unsupported));
 }

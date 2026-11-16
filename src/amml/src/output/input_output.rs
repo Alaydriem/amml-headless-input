@@ -1,18 +1,20 @@
-use amm_core::structs::input::{PointerOp as ManagerPointerOp, TurnAxis};
+use amm_core::structs::input::{MoveIntent, PointerOp as ManagerPointerOp, TurnAxis};
 use headless_input_core::control::{InputKey, PointerAction, TapKey};
 use headless_input_core::player::{InputFrame, KeySet, PointerOp};
 
 use crate::errors::OutputError;
-use crate::output::{KeyCodes, LeaseHolder};
+use crate::output::{KeyCodes, LeaseHolder, MoveMode};
 use crate::traits::ManagerPort;
 
-// Sends an `InputFrame` to the manager as changes: a key or button goes down or up only when the frame differs from
-// what the mod holds, a hotbar slot and a pressed key are tapped (down on its frame, up on the next), a scroll turns
+// Sends an `InputFrame` to the manager as changes: the movement keys are sent as one move command when they change
+// (as fake keys to a manager without it), a button goes down or up only when the frame differs from what the mod holds, a hotbar slot and a pressed key are tapped (down on its frame, up on the next), a scroll turns
 // the wheel, and a rotation turns the look. The record holds only what the manager took, so `release_all` sends an up
 // for each thing still down. The look is turned through the manager as Turn actions: the output keeps the look it
 // commanded last and sends the difference to the wanted look. Nothing allocates
 pub struct InputOutput {
     keys: KeySet,
+    // how `keys` reached the manager; it resets with the record, so each run asks the manager once
+    mode: MoveMode,
     attack: bool,
     use_item: bool,
     // the hotbar key pressed on the last frame, let go on this one
@@ -31,7 +33,15 @@ impl InputOutput {
     const MILLIDEGREES: f32 = 1000.0;
 
     pub fn new() -> Self {
-        Self { keys: KeySet::new(), attack: false, use_item: false, hotbar: None, tap: None, look: None }
+        Self {
+            keys: KeySet::new(),
+            mode: MoveMode::Unknown,
+            attack: false,
+            use_item: false,
+            hotbar: None,
+            tap: None,
+            look: None,
+        }
     }
 
     // the keys, the hotbar tap and the pointer events of one frame, then its rotation. On the first send the manager
@@ -64,11 +74,21 @@ impl InputOutput {
         wrapped - 180.0
     }
 
-    // an up for every held key, hotbar key, pressed key and button; a refused up is dropped, so the record ends empty
+    // the move cleared (or an up for every held movement key), then an up for the hotbar key, the pressed key and
+    // every button; a refused up is dropped, so the record ends empty
     pub fn release_all(&mut self, port: &impl ManagerPort) {
-        for key in InputKey::ALL {
-            if self.keys.contains(key) {
-                let _ = port.send_key(KeyCodes::key(key), false);
+        if !self.keys.is_empty() {
+            match self.mode {
+                MoveMode::Command => {
+                    let _ = port.send_move(MoveIntent::ZERO);
+                }
+                MoveMode::Keys | MoveMode::Unknown => {
+                    for key in InputKey::ALL {
+                        if self.keys.contains(key) {
+                            let _ = port.send_key(KeyCodes::key(key), false);
+                        }
+                    }
+                }
             }
         }
         if let Some(vk) = self.hotbar {
@@ -133,7 +153,22 @@ impl InputOutput {
         Ok(())
     }
 
+    // the movement keys as one move command; a manager without it gets them as fake keys for the rest of the run
     fn send_keys(&mut self, wanted: KeySet, port: &impl ManagerPort) -> Result<(), OutputError> {
+        if wanted == self.keys {
+            return Ok(());
+        }
+        if self.mode != MoveMode::Keys {
+            match port.send_move(Self::intent(wanted)) {
+                Ok(()) => {
+                    self.mode = MoveMode::Command;
+                    self.keys = wanted;
+                    return Ok(());
+                }
+                Err(OutputError::Unsupported) => self.mode = MoveMode::Keys,
+                Err(error) => return Err(error),
+            }
+        }
         for key in InputKey::ALL {
             let down = wanted.contains(key);
             if down != self.keys.contains(key) {
@@ -146,6 +181,20 @@ impl InputOutput {
             }
         }
         Ok(())
+    }
+
+    // forward is W less S, left is A less D; Space, Shift and Ctrl are jump, sneak and sprint
+    fn intent(keys: KeySet) -> MoveIntent {
+        let axis = |plus: InputKey, minus: InputKey| {
+            f32::from(u8::from(keys.contains(plus))) - f32::from(u8::from(keys.contains(minus)))
+        };
+        MoveIntent {
+            forward: axis(InputKey::Forward, InputKey::Back),
+            left: axis(InputKey::Left, InputKey::Right),
+            jump: keys.contains(InputKey::Jump),
+            sneak: keys.contains(InputKey::Sneak),
+            sprint: keys.contains(InputKey::Sprint),
+        }
     }
 
     fn send_hotbar(&mut self, slot: Option<u8>, port: &impl ManagerPort) -> Result<(), OutputError> {

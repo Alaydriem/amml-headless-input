@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 
 use alaydriem_headless_input::errors::{LeaseError, OutputError};
 use alaydriem_headless_input::traits::ManagerPort;
-use amm_core::structs::input::PointerOp;
+use amm_core::structs::input::{MoveIntent, PointerOp};
 
 // one call the output side made on the manager
 #[derive(Debug, Clone, PartialEq)]
@@ -11,22 +11,51 @@ pub enum Call {
     Release,
     Key(u32, bool),
     Pointer(PointerOp),
+    Move(MoveIntent),
     // a step outside the manager the test wrote into the record, to check the order
     Mark(&'static str),
 }
 
 // a manager stand-in: every call is recorded in order. A lease is granted unless a holder is set. While the panel
-// is open every send is refused; while another mod holds the input every down is refused and ups are taken
+// is open every send is refused; while another mod holds the input every down is refused and ups are taken. The zero
+// move is an up. A manager made `without_move` answers every move `Unsupported`; `fail_moves` and `fail_keys` set the
+// answer to every non-zero move and every key down
 pub struct FakeManager {
     calls: RefCell<Vec<Call>>,
     holder: Option<String>,
     panel: Cell<bool>,
     taken: Cell<bool>,
+    move_supported: bool,
+    move_error: RefCell<Option<OutputError>>,
+    key_error: RefCell<Option<OutputError>>,
 }
 
 impl FakeManager {
     pub fn new() -> Self {
-        Self { calls: RefCell::new(Vec::new()), holder: None, panel: Cell::new(false), taken: Cell::new(false) }
+        Self {
+            calls: RefCell::new(Vec::new()),
+            holder: None,
+            panel: Cell::new(false),
+            taken: Cell::new(false),
+            move_supported: true,
+            move_error: RefCell::new(None),
+            key_error: RefCell::new(None),
+        }
+    }
+
+    // a manager older than the move command
+    pub fn without_move() -> Self {
+        Self { move_supported: false, ..Self::new() }
+    }
+
+    // from now on every non-zero move is answered with `error`
+    pub fn fail_moves(&self, error: OutputError) {
+        *self.move_error.borrow_mut() = Some(error);
+    }
+
+    // from now on every key down is answered with `error`
+    pub fn fail_keys(&self, error: OutputError) {
+        *self.key_error.borrow_mut() = Some(error);
     }
 
     // a manager whose Input lease `holder` holds
@@ -81,7 +110,24 @@ impl ManagerPort for FakeManager {
 
     fn send_key(&self, vk: u32, down: bool) -> Result<(), OutputError> {
         self.record(Call::Key(vk, down));
+        if down && let Some(error) = self.key_error.borrow().clone() {
+            return Err(error);
+        }
         self.answer(down)
+    }
+
+    fn send_move(&self, intent: MoveIntent) -> Result<(), OutputError> {
+        self.record(Call::Move(intent));
+        if !self.move_supported {
+            return Err(OutputError::Unsupported);
+        }
+        if intent.is_zero() {
+            return Ok(());
+        }
+        if let Some(error) = self.move_error.borrow().clone() {
+            return Err(error);
+        }
+        self.answer(true)
     }
 
     fn send_pointer(&self, op: PointerOp) -> Result<(), OutputError> {

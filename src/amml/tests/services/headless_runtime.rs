@@ -3,16 +3,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use alaydriem_headless_input::output::KeyCodes;
 use alaydriem_headless_input::services::HeadlessRuntime;
 use alaydriem_headless_input::types::{FrameView, LinkState};
 use amm_client::test_support::FakeTable;
 use amm_core::errors::LinkError;
 use amm_core::structs::descriptor::Capability;
 use amm_core::structs::event::ModEvent;
+use amm_core::structs::input::MoveIntent;
 use amm_core::structs::registry::ModIndex;
 use amml_sdk::{HookHandle, ModDirs};
-use headless_input_core::control::InputKey;
 use headless_input_core::run::{EndReason, RunId, RunState};
 use headless_input_core::structs::Capabilities;
 use headless_input_mcp::port::{HeadlessPort, PortError};
@@ -27,7 +26,8 @@ fn runtime() -> HeadlessRuntime {
 }
 
 fn forward(down: bool) -> Call {
-    Call::Key(KeyCodes::key(InputKey::Forward), down)
+    let forward = if down { 1.0 } else { 0.0 };
+    Call::Move(MoveIntent { forward, ..MoveIntent::ZERO })
 }
 
 const WAIT: &str = "name = \"wait\"\n\nstep \"wait\" {\n  for = \"5s\"\n}\n";
@@ -83,8 +83,9 @@ impl Linked {
         self.runtime.local_port(RunHarness::WAIT).status().last.map(|last| last.reason.clone())
     }
 
-    fn sent_keys() -> Vec<(u32, bool)> {
-        FakeTable::with(|state| state.sent_keys())
+    // the (forward, left, flags) of each move, in thousandths
+    fn sent_moves() -> Vec<(i32, i32, u32)> {
+        FakeTable::with(|state| state.sent_moves())
     }
 
     fn released() -> Vec<Capability> {
@@ -92,9 +93,9 @@ impl Linked {
     }
 }
 
-fn w() -> u32 {
-    KeyCodes::key(InputKey::Forward)
-}
+// the move of a walk forward, and the clear
+const WALKING: (i32, i32, u32) = (1000, 0, 0);
+const STILL: (i32, i32, u32) = (0, 0, 0);
 
 #[test]
 fn the_saved_settings_are_read_on_attach_and_again_on_change() {
@@ -348,7 +349,7 @@ fn the_panel_opening_during_a_wait_stops_the_run_and_it_does_not_resume() {
     assert_eq!(linked.state(), RunState::Idle);
     assert_eq!(linked.reason(), Some(EndReason::Stopped));
     assert_eq!(Linked::released(), vec![Capability::Input]);
-    assert!(Linked::sent_keys().is_empty());
+    assert!(Linked::sent_moves().is_empty());
 
     FakeTable::with(|state| state.panel_open = false);
     linked.tick();
@@ -372,7 +373,7 @@ fn another_mod_suspending_the_input_aborts_the_run_and_releases_keys_then_lease(
         matches!(reason, Some(EndReason::Aborted { ref why }) if why == "another mod took the input"),
         "{reason:?}"
     );
-    assert_eq!(Linked::sent_keys(), vec![(w(), true), (w(), false)]);
+    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
     assert_eq!(Linked::released(), vec![Capability::Input]);
 }
 
@@ -391,7 +392,7 @@ fn another_mod_revoking_the_input_aborts_the_run() {
         matches!(reason, Some(EndReason::Aborted { ref why }) if why == "another mod took the input"),
         "{reason:?}"
     );
-    assert_eq!(Linked::sent_keys(), vec![(w(), true), (w(), false)]);
+    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
 }
 
 #[test]
@@ -406,7 +407,7 @@ fn the_manager_disabling_the_mod_aborts_the_run_and_releases_it() {
     assert_eq!(linked.state(), RunState::Idle);
     let reason = linked.reason();
     assert!(matches!(reason, Some(EndReason::Aborted { ref why }) if why == "the mod was disabled"), "{reason:?}");
-    assert_eq!(Linked::sent_keys(), vec![(w(), true), (w(), false)]);
+    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
     assert_eq!(Linked::released(), vec![Capability::Input]);
 }
 
@@ -432,14 +433,14 @@ fn fake_keys_released_drops_the_record_and_a_world_exit_on_that_frame_aborts() {
     linked.update(&RunHarness::world());
     assert_eq!(linked.state(), RunState::Running, "a release of the fake keys is not the panel");
     linked.tick();
-    assert_eq!(Linked::sent_keys(), vec![(w(), true), (w(), true)], "the forgotten key goes down again");
+    assert_eq!(Linked::sent_moves(), vec![WALKING, WALKING], "the forgotten move is sent again");
 
     FakeTable::push_event(ModEvent::FakeKeysReleased);
     linked.update(&RunHarness::title());
 
     let reason = linked.reason();
     assert!(matches!(reason, Some(EndReason::Aborted { ref why }) if why == "the world was left"), "{reason:?}");
-    assert_eq!(Linked::sent_keys(), vec![(w(), true), (w(), true)], "no up for a key the manager let go");
+    assert_eq!(Linked::sent_moves(), vec![WALKING, WALKING], "no clear for a move the manager let go");
     assert_eq!(Linked::released(), vec![Capability::Input]);
 }
 
@@ -451,7 +452,7 @@ fn a_panic_in_a_hook_body_ends_the_run_and_releases_keys_then_lease() {
 
     linked.runtime.guarded(|| panic!("forced panic in a hook body"));
 
-    assert_eq!(Linked::sent_keys(), vec![(w(), true), (w(), false)]);
+    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
     assert_eq!(Linked::released(), vec![Capability::Input]);
     assert_eq!(linked.runtime.link_state(), LinkState::Disabled);
     let reason = linked.reason();
@@ -459,7 +460,7 @@ fn a_panic_in_a_hook_body_ends_the_run_and_releases_keys_then_lease() {
     assert!(internal, "{reason:?}");
     linked.tick();
     linked.update(&RunHarness::world());
-    assert_eq!(Linked::sent_keys().len(), 2, "nothing runs after the panic");
+    assert_eq!(Linked::sent_moves().len(), 2, "nothing runs after the panic");
 }
 
 const ALLOW_ON: &str = "mcp {

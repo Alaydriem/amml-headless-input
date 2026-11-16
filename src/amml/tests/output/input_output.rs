@@ -1,6 +1,6 @@
 use alaydriem_headless_input::errors::OutputError;
 use alaydriem_headless_input::output::{InputOutput, LeaseHolder};
-use amm_core::structs::input::{PointerButton, PointerOp as ManagerPointerOp, TurnAxis};
+use amm_core::structs::input::{MoveIntent, PointerButton, PointerOp as ManagerPointerOp, TurnAxis};
 use headless_input_core::control::{InputKey, PointerAction, TapKey};
 use headless_input_core::player::{InputFrame, KeySet, PlayerView, PointerOp, ScreenKind};
 use headless_input_core::run::{Command, EndReason, LiveAction, RunDefaults, RunSupervisor};
@@ -24,22 +24,103 @@ fn button(button: PointerButton, down: bool) -> Call {
     Call::Pointer(ManagerPointerOp::Button { button, down })
 }
 
+fn walk(forward: f32, left: f32) -> Call {
+    Call::Move(MoveIntent { forward, left, ..MoveIntent::ZERO })
+}
+
+fn still() -> Call {
+    Call::Move(MoveIntent::ZERO)
+}
+
 fn view() -> PlayerView {
     PlayerView { position: [0.0; 3], yaw: 0.0, pitch: 0.0, dimension: Some(0), screen: ScreenKind::InWorld }
 }
 
 #[test]
-fn only_changed_keys_are_sent() {
+fn a_move_is_sent_only_when_the_movement_keys_change() {
     let port = FakeManager::new();
     let mut output = InputOutput::new();
     let forward = frame_with(&[InputKey::Forward]);
 
     output.apply(&forward, &port, None).unwrap();
     output.apply(&forward, &port, None).unwrap();
-    assert_eq!(port.calls(), vec![Call::Key(0x57, true)]);
+    assert_eq!(port.calls(), vec![walk(1.0, 0.0)]);
 
     output.apply(&InputFrame::default(), &port, None).unwrap();
-    assert_eq!(port.calls(), vec![Call::Key(0x57, true), Call::Key(0x57, false)]);
+    assert_eq!(port.calls(), vec![walk(1.0, 0.0), still()]);
+}
+
+#[test]
+fn the_movement_keys_become_one_move() {
+    let port = FakeManager::new();
+    let mut output = InputOutput::new();
+
+    let all = [InputKey::Forward, InputKey::Left, InputKey::Jump, InputKey::Sneak, InputKey::Sprint];
+    output.apply(&frame_with(&all), &port, None).unwrap();
+    output.apply(&frame_with(&[InputKey::Back, InputKey::Right]), &port, None).unwrap();
+    output.apply(&frame_with(&[InputKey::Forward, InputKey::Back, InputKey::Left]), &port, None).unwrap();
+
+    assert_eq!(
+        port.calls(),
+        vec![
+            Call::Move(MoveIntent { forward: 1.0, left: 1.0, jump: true, sneak: true, sprint: true }),
+            walk(-1.0, -1.0),
+            walk(0.0, 1.0),
+        ]
+    );
+}
+
+#[test]
+fn a_manager_without_the_move_command_gets_the_movement_keys_for_the_rest_of_the_run() {
+    let port = FakeManager::without_move();
+    let mut output = InputOutput::new();
+
+    output.apply(&frame_with(&[InputKey::Forward]), &port, None).unwrap();
+    assert_eq!(port.calls(), vec![walk(1.0, 0.0), Call::Key(0x57, true)]);
+    port.clear();
+
+    output.apply(&frame_with(&[InputKey::Forward, InputKey::Jump]), &port, None).unwrap();
+    assert_eq!(port.calls(), vec![Call::Key(0x20, true)]);
+    port.clear();
+
+    output.release_all(&port);
+    assert_eq!(port.calls(), vec![Call::Key(0x57, false), Call::Key(0x20, false)]);
+}
+
+#[test]
+fn a_move_the_manager_is_not_ready_for_ends_the_run_with_its_own_reason() {
+    let port = FakeManager::new();
+    let mut lease = LeaseHolder::new();
+    let mut output = InputOutput::new();
+    let mut supervisor = RunSupervisor::new(RunDefaults::default(), SystemClock::new());
+    lease.begin(&port).unwrap();
+    port.fail_moves(OutputError::NotReady);
+    supervisor.apply(Command::Live(LiveAction::Hold { keys: keys(&[InputKey::Forward]), ticks: None })).unwrap();
+
+    let refused = output.apply(&supervisor.on_tick(&view()), &port, None).unwrap_err();
+    assert_eq!(refused, OutputError::NotReady);
+    assert_ne!(refused.why(), OutputError::Refused.why());
+    supervisor.abort(refused.why());
+
+    let outcome = supervisor.on_frame(&view(), false, true);
+    assert_eq!(outcome.end, Some(EndReason::Aborted { why: refused.why().into() }));
+    port.clear();
+    output.end(&port, &mut lease);
+    assert_eq!(port.calls(), vec![Call::Release], "nothing was taken, so nothing is cleared");
+}
+
+#[test]
+fn a_key_down_into_a_full_manager_queue_is_busy() {
+    let port = FakeManager::new();
+    let mut output = InputOutput::new();
+    port.fail_keys(OutputError::Busy);
+
+    let full = output.apply(&tap("E"), &port, None);
+
+    assert_eq!(full, Err(OutputError::Busy));
+    port.clear();
+    output.release_all(&port);
+    assert!(port.calls().is_empty(), "a refused down leaves nothing to let go");
 }
 
 #[test]
@@ -56,15 +137,9 @@ fn release_all_sends_ups_for_every_held_key_and_button() {
     output.release_all(&port);
 
     let calls = port.calls();
-    assert_eq!(calls.len(), 6);
-    for up in [
-        Call::Key(0x57, false),
-        Call::Key(0x20, false),
-        Call::Key(0x11, false),
-        Call::Key(0x35, false),
-        button(PointerButton::Left, false),
-        button(PointerButton::Right, false),
-    ] {
+    assert_eq!(calls.len(), 4);
+    for up in [still(), Call::Key(0x35, false), button(PointerButton::Left, false), button(PointerButton::Right, false)]
+    {
         assert!(calls.contains(&up), "{up:?} not sent in {calls:?}");
     }
 
@@ -86,7 +161,7 @@ fn end_releases_inputs_before_the_lease() {
 
     output.end(&port, &mut lease);
 
-    assert_eq!(port.calls(), vec![Call::Key(0x53, false), button(PointerButton::Right, false), Call::Release]);
+    assert_eq!(port.calls(), vec![still(), button(PointerButton::Right, false), Call::Release]);
     assert!(!lease.is_held());
 }
 
@@ -171,7 +246,7 @@ fn forget_drops_the_record_without_sending() {
 }
 
 #[test]
-fn a_refused_send_key_ends_the_run_aborted() {
+fn a_refused_move_ends_the_run_aborted() {
     let port = FakeManager::new();
     let mut lease = LeaseHolder::new();
     let mut output = InputOutput::new();
@@ -193,7 +268,8 @@ fn a_refused_send_key_ends_the_run_aborted() {
     port.clear();
     let _ = output.apply(&outcome.frame.unwrap(), &port, None);
     output.end(&port, &mut lease);
-    assert_eq!(port.calls(), vec![Call::Key(0x57, false), Call::Key(0x57, false), Call::Release]);
+    // the clear is taken even while the panel is open
+    assert_eq!(port.calls(), vec![still(), Call::Release]);
 }
 
 #[test]
@@ -212,10 +288,7 @@ fn another_mod_taking_the_lease_mid_run_still_gets_every_held_key_released_befor
     port.clear();
     output.end(&port, &mut lease);
 
-    assert_eq!(
-        port.calls(),
-        vec![Call::Key(0x57, false), Call::Key(0x11, false), button(PointerButton::Left, false), Call::Release]
-    );
+    assert_eq!(port.calls(), vec![still(), button(PointerButton::Left, false), Call::Release]);
 }
 
 fn turn(axis: TurnAxis, millidegrees: i32) -> Call {

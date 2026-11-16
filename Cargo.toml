@@ -24,6 +24,12 @@ socket2 = "=0.6.5"
 headless-input-core = { path = "src/core" }
 headless-input-mcp = { path = "src/mcp" }
 
+# Temporary: the manager's send_move (ABI 2.4) exists only in the local checkout. Remove when a manager tag ships it.
+[patch."https://github.com/Alaydriem/amml-modmanager.git"]
+amm-abi = { path = "../modmanager/crates/amm-abi" }
+amm-client = { path = "../modmanager/crates/amm-client" }
+amm-core = { path = "../modmanager/crates/amm-core" }
+
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"

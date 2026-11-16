@@ -5,7 +5,7 @@ use amm_core::errors::LinkError;
 use amm_core::structs::capture::ScreenshotLayers;
 use amm_core::structs::descriptor::Capability;
 use amm_core::structs::event::ModEvent;
-use amm_core::structs::input::PointerOp;
+use amm_core::structs::input::{MoveIntent, PointerOp};
 use amm_core::structs::lease::AcquireOutcome;
 use headless_input_core::config::HeadlessConfig;
 use headless_input_core::structs::ScreenshotLayer;
@@ -105,6 +105,10 @@ impl ManagerPort for HeadlessLink {
 
     fn send_pointer(&self, op: PointerOp) -> Result<(), OutputError> {
         self.link.send_pointer(op).map_err(OutputError::from_link)
+    }
+
+    fn send_move(&self, intent: MoveIntent) -> Result<(), OutputError> {
+        self.link.send_move(intent).map_err(OutputError::from_link)
     }
 
     fn panel_open(&self) -> bool {
