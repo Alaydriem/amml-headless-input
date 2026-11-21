@@ -21,6 +21,9 @@ impl StepPlayer {
     // the cursor moves one tick may make before it gives up until the next tick; this bounds the work of a tick on a
     // file whose steps all end at once
     pub const MAX_MOVES_PER_TICK: usize = 4 * ControlFile::MAX_STEPS as usize;
+    // how long the menus must stay up after a join got under way before the join step fails, when a clock drives
+    // the player (`set_now`)
+    pub const JOIN_MENUS_GRACE: std::time::Duration = super::step_run::StepRun::JOIN_MENUS_GRACE;
 
     pub fn new(file: ControlFile) -> Self {
         Self {
@@ -31,6 +34,12 @@ impl StepPlayer {
             now: 0,
             outcome: None,
         }
+    }
+
+    // the time of the frames the player is ticked on next; without it a join fails at the first title frame after
+    // the join got under way
+    pub fn set_now(&mut self, now: std::time::Instant) {
+        self.run.set_now(now);
     }
 
     pub fn tick(&mut self, view: &PlayerView) -> InputFrame {

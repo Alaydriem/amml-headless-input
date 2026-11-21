@@ -1,45 +1,47 @@
 use std::path::Path;
 
-use amm_client::link::{ApiTable, EventDrain, ManagerLink};
-use amm_core::errors::LinkError;
+use amm_client::link::{LinkState, ManagerLink, PointerOp};
 use amm_core::structs::capture::ScreenshotLayers;
 use amm_core::structs::descriptor::Capability;
 use amm_core::structs::event::ModEvent;
-use amm_core::structs::input::{MoveIntent, PointerOp};
 use amm_core::structs::lease::AcquireOutcome;
+use amml_api::{KeyCode, MoveIntent};
 use headless_input_core::config::HeadlessConfig;
 use headless_input_core::structs::ScreenshotLayer;
 
 use crate::errors::{LeaseError, OutputError};
-use crate::services::{HeadlessDescriptor, RawSettings, SettingsReader};
+use crate::services::{RawSettings, ScreenshotDesk, SettingsReader};
 use crate::traits::{ManagerPort, ScreenshotPort};
 
-// the registration with the mod manager and the settings read from it; `events` holds at most
-// MAX_EVENTS_PER_TICK and is cleared at the start of every drain
+// The link to the mod manager (started in enable, connected at the manager's `ProviderReady`) and the settings read
+// from it; `events` holds at most MAX_EVENTS_PER_FRAME and is cleared at the start of every drain. Whether the loader
+// takes screenshots is read once at enable
 pub struct HeadlessLink {
     link: ManagerLink,
     config: HeadlessConfig,
     events: Vec<ModEvent>,
+    screenshots: bool,
 }
 
 impl HeadlessLink {
-    pub const MAX_DRAINS_PER_TICK: usize = 4;
-    pub const MAX_EVENTS_PER_TICK: usize = Self::MAX_DRAINS_PER_TICK * EventDrain::CAPACITY;
-    // the holder named when the manager denies the lease and does not say who holds it
+    pub const MAX_EVENTS_PER_FRAME: usize = 64;
     // the setting that allows the MCP pairing request that waits
     pub const PAIRING_SETTING: &'static str = "mcp.allow_pairing";
+    // the holder named when the manager denies the lease and does not say who holds it
     pub const UNKNOWN_HOLDER: &'static str = "another mod";
 
-    pub fn new(table: ApiTable, config_dir: &Path) -> Result<Self, LinkError> {
-        let link = ManagerLink::without_frame(table, HeadlessDescriptor::TEXT, config_dir)?;
-        Self::from_link(link)
+    pub fn new(link: ManagerLink, screenshots: bool) -> Self {
+        Self {
+            link,
+            config: HeadlessConfig::default(),
+            events: Vec::with_capacity(Self::MAX_EVENTS_PER_FRAME),
+            screenshots,
+        }
     }
 
-    pub fn from_link(link: ManagerLink) -> Result<Self, LinkError> {
-        let mut this =
-            Self { config: HeadlessConfig::default(), link, events: Vec::with_capacity(Self::MAX_EVENTS_PER_TICK) };
-        this.config = this.read_settings();
-        Ok(this)
+    // whether the link reached the manager
+    pub fn is_connected(&self) -> bool {
+        self.link.state() == LinkState::Connected
     }
 
     pub fn config(&self) -> &HeadlessConfig {
@@ -52,17 +54,11 @@ impl HeadlessLink {
         &self.config
     }
 
-    // reads the queued manager events into the reused buffer, at most MAX_EVENTS_PER_TICK; the rest wait for the next
-    // tick. The slice is valid until the next drain
+    // the queued manager and loader events the link passes on, at most MAX_EVENTS_PER_FRAME; the rest wait for the next
+    // frame. The slice is valid until the next drain
     pub fn drain(&mut self) -> &[ModEvent] {
         self.events.clear();
-        for _ in 0..Self::MAX_DRAINS_PER_TICK {
-            let before = self.events.len();
-            self.events.extend(self.link.events());
-            if self.events.len() - before < EventDrain::CAPACITY {
-                break;
-            }
-        }
+        self.events.extend(self.link.events().take(Self::MAX_EVENTS_PER_FRAME));
         &self.events
     }
 
@@ -99,8 +95,10 @@ impl ManagerPort for HeadlessLink {
         self.link.release(Capability::Input);
     }
 
+    // a virtual-key code of 1 to FEh; another code is not a key
     fn send_key(&self, vk: u32, down: bool) -> Result<(), OutputError> {
-        self.link.send_key(vk, down).map_err(OutputError::from_link)
+        let key = u16::try_from(vk).ok().filter(|code| (1..=0xFE).contains(code)).ok_or(OutputError::Unsupported)?;
+        self.link.send_key(KeyCode(key), down).map_err(OutputError::from_link)
     }
 
     fn send_pointer(&self, op: PointerOp) -> Result<(), OutputError> {
@@ -111,6 +109,11 @@ impl ManagerPort for HeadlessLink {
         self.link.send_move(intent).map_err(OutputError::from_link)
     }
 
+    // the link alone has no client: `GamePort` selects through the game HUD
+    fn select_hotbar(&self, _index: u8) -> Result<(), OutputError> {
+        Err(OutputError::Unsupported)
+    }
+
     fn panel_open(&self) -> bool {
         self.link.panel_open()
     }
@@ -118,25 +121,7 @@ impl ManagerPort for HeadlessLink {
 
 impl ScreenshotPort for HeadlessLink {
     fn supports_screenshots(&self) -> bool {
-        self.link.supports_screenshots()
-    }
-
-    fn acquire_overlay(&self) -> bool {
-        match self.link.acquire(Capability::Overlay) {
-            Ok(AcquireOutcome::Granted) => true,
-            Ok(outcome) => {
-                curia::warn!("the Overlay lease for a screenshot was not granted", { outcome: format!("{outcome:?}") });
-                false
-            }
-            Err(error) => {
-                curia::warn!("the Overlay lease for a screenshot could not be asked for", { error: error.to_string() });
-                false
-            }
-        }
-    }
-
-    fn release_overlay(&self) {
-        self.link.release(Capability::Overlay);
+        self.screenshots
     }
 
     fn request_screenshot(&self, path: &Path, layer: ScreenshotLayer) -> Result<u32, OutputError> {
@@ -144,6 +129,7 @@ impl ScreenshotPort for HeadlessLink {
             ScreenshotLayer::Game => ScreenshotLayers::GameOnly,
             ScreenshotLayer::Mods => ScreenshotLayers::WithModLayers,
         };
-        self.link.request_screenshot_with(path, layers).map_err(OutputError::from_link)
+        let id = self.link.request_screenshot_with(path, layers).map_err(OutputError::from_link)?;
+        Ok(ScreenshotDesk::sequence(id))
     }
 }

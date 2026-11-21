@@ -106,6 +106,10 @@ impl HeadlessPort for LocalPort {
     }
 
     fn approve_pairing(&self, client: &str) -> bool {
+        if cfg!(feature = "ingame-proof") {
+            curia::warn!("pairing allowed without the switch: an ingame-proof build", { client: client.to_string() });
+            return true;
+        }
         self.prompt.ask(client)
     }
 

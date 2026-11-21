@@ -1,6 +1,7 @@
 use alaydriem_headless_input::errors::OutputError;
 use alaydriem_headless_input::output::{InputOutput, LeaseHolder};
-use amm_core::structs::input::{MoveIntent, PointerButton, PointerOp as ManagerPointerOp, TurnAxis};
+use amm_client::link::PointerOp as ManagerPointerOp;
+use amml_api::{Look, MouseButton as PointerButton, MoveIntent};
 use headless_input_core::control::{InputKey, PointerAction, TapKey};
 use headless_input_core::player::{InputFrame, KeySet, PlayerView, PointerOp, ScreenKind};
 use headless_input_core::run::{Command, EndReason, LiveAction, RunDefaults, RunSupervisor};
@@ -25,11 +26,11 @@ fn button(button: PointerButton, down: bool) -> Call {
 }
 
 fn walk(forward: f32, left: f32) -> Call {
-    Call::Move(MoveIntent { forward, left, ..MoveIntent::ZERO })
+    Call::Move(MoveIntent { forward, left, ..MoveIntent::default() })
 }
 
 fn still() -> Call {
-    Call::Move(MoveIntent::ZERO)
+    Call::Move(MoveIntent::default())
 }
 
 fn view() -> PlayerView {
@@ -137,9 +138,8 @@ fn release_all_sends_ups_for_every_held_key_and_button() {
     output.release_all(&port);
 
     let calls = port.calls();
-    assert_eq!(calls.len(), 4);
-    for up in [still(), Call::Key(0x35, false), button(PointerButton::Left, false), button(PointerButton::Right, false)]
-    {
+    assert_eq!(calls.len(), 3);
+    for up in [still(), button(PointerButton::Left, false), button(PointerButton::Right, false)] {
         assert!(calls.contains(&up), "{up:?} not sent in {calls:?}");
     }
 
@@ -166,26 +166,25 @@ fn end_releases_inputs_before_the_lease() {
 }
 
 #[test]
-fn hotbar_slot_3_presses_and_releases_the_3_key() {
+fn hotbar_slot_3_selects_hud_slot_2_once() {
     let port = FakeManager::new();
     let mut output = InputOutput::new();
 
     output.apply(&InputFrame { hotbar: Some(3), ..InputFrame::default() }, &port, None).unwrap();
-    assert_eq!(port.calls(), vec![Call::Key(0x33, true)]);
-
     output.apply(&InputFrame::default(), &port, None).unwrap();
-    assert_eq!(port.calls(), vec![Call::Key(0x33, true), Call::Key(0x33, false)]);
+
+    assert_eq!(port.calls(), vec![Call::Hotbar(2)]);
 }
 
 #[test]
-fn a_new_hotbar_slot_releases_the_last_one_first() {
+fn hotbar_slots_1_and_9_are_the_ends_of_the_hud() {
     let port = FakeManager::new();
     let mut output = InputOutput::new();
 
     output.apply(&InputFrame { hotbar: Some(1), ..InputFrame::default() }, &port, None).unwrap();
     output.apply(&InputFrame { hotbar: Some(9), ..InputFrame::default() }, &port, None).unwrap();
 
-    assert_eq!(port.calls(), vec![Call::Key(0x31, true), Call::Key(0x31, false), Call::Key(0x39, true)]);
+    assert_eq!(port.calls(), vec![Call::Hotbar(0), Call::Hotbar(8)]);
 }
 
 #[test]
@@ -219,7 +218,7 @@ fn a_press_of_a_held_button_sends_nothing_and_a_release_lets_it_go() {
 }
 
 #[test]
-fn a_scroll_past_the_wheel_limit_is_sent_in_turns() {
+fn a_scroll_is_one_wheel_turn_and_a_zero_scroll_sends_nothing() {
     let port = FakeManager::new();
     let mut output = InputOutput::new();
     let mut frame = InputFrame::default();
@@ -228,8 +227,7 @@ fn a_scroll_past_the_wheel_limit_is_sent_in_turns() {
 
     output.apply(&frame, &port, None).unwrap();
 
-    let wheel = |steps| Call::Pointer(ManagerPointerOp::Wheel { steps });
-    assert_eq!(port.calls(), vec![wheel(-32), wheel(-32), wheel(-6)]);
+    assert_eq!(port.calls(), vec![Call::Pointer(ManagerPointerOp::Wheel { notches: -70.0 })]);
 }
 
 #[test]
@@ -291,8 +289,8 @@ fn another_mod_taking_the_lease_mid_run_still_gets_every_held_key_released_befor
     assert_eq!(port.calls(), vec![still(), button(PointerButton::Left, false), Call::Release]);
 }
 
-fn turn(axis: TurnAxis, millidegrees: i32) -> Call {
-    Call::Pointer(ManagerPointerOp::Turn { axis, millidegrees })
+fn turn(yaw: f32, pitch: f32) -> Call {
+    Call::Pointer(ManagerPointerOp::Turn(Look { yaw, pitch }))
 }
 
 fn look(yaw: f32, pitch: f32) -> InputFrame {
@@ -309,15 +307,7 @@ fn a_rotation_sends_the_difference_from_the_last_commanded_look() {
     output.apply(&look(45.0, 10.0), &port, Some((-120.0, 70.0))).unwrap();
     output.apply(&look(45.0, -5.0), &port, Some((-120.0, 70.0))).unwrap();
 
-    assert_eq!(
-        port.calls(),
-        vec![
-            turn(TurnAxis::Yaw, 30_000),
-            turn(TurnAxis::Pitch, -10_000),
-            turn(TurnAxis::Yaw, 15_000),
-            turn(TurnAxis::Pitch, 15_000),
-        ]
-    );
+    assert_eq!(port.calls(), vec![turn(30.0, 10.0), turn(15.0, 0.0), turn(0.0, -15.0)]);
 }
 
 #[test]
@@ -326,14 +316,14 @@ fn the_first_rotation_of_a_step_starts_from_the_read_look() {
     let mut output = InputOutput::new();
 
     output.apply(&look(110.0, 20.0), &port, Some((100.0, 20.0))).unwrap();
-    assert_eq!(port.calls(), vec![turn(TurnAxis::Yaw, 10_000)]);
+    assert_eq!(port.calls(), vec![turn(10.0, 0.0)]);
     port.clear();
 
     // a frame with no rotation ends the step: the next rotation starts from the read look again
     output.apply(&InputFrame::default(), &port, Some((110.0, 20.0))).unwrap();
     output.apply(&look(0.0, 20.0), &port, Some((-20.0, 25.0))).unwrap();
 
-    assert_eq!(port.calls(), vec![turn(TurnAxis::Yaw, 20_000), turn(TurnAxis::Pitch, 5_000)]);
+    assert_eq!(port.calls(), vec![turn(20.0, -5.0)]);
 }
 
 #[test]
@@ -344,7 +334,7 @@ fn a_yaw_difference_across_180_takes_the_short_way() {
     output.apply(&look(-170.0, 0.0), &port, Some((170.0, 0.0))).unwrap();
     output.apply(&look(170.0, 0.0), &port, Some((0.0, 0.0))).unwrap();
 
-    assert_eq!(port.calls(), vec![turn(TurnAxis::Yaw, 20_000), turn(TurnAxis::Yaw, -20_000)]);
+    assert_eq!(port.calls(), vec![turn(20.0, 0.0), turn(-20.0, 0.0)]);
 }
 
 #[test]
@@ -355,7 +345,7 @@ fn the_pitch_is_held_to_straight_up_and_down() {
     output.apply(&look(0.0, 120.0), &port, Some((0.0, 80.0))).unwrap();
     output.apply(&look(0.0, 95.0), &port, Some((0.0, 80.0))).unwrap();
 
-    assert_eq!(port.calls(), vec![turn(TurnAxis::Pitch, -10_000)]);
+    assert_eq!(port.calls(), vec![turn(0.0, 10.0)]);
 }
 
 #[test]
@@ -405,7 +395,7 @@ fn forget_drops_the_commanded_look() {
     output.forget();
     output.apply(&look(30.0, 0.0), &port, Some((20.0, 0.0))).unwrap();
 
-    assert_eq!(port.calls(), vec![turn(TurnAxis::Yaw, 10_000)]);
+    assert_eq!(port.calls(), vec![turn(10.0, 0.0)]);
 }
 
 fn tap(name: &str) -> InputFrame {
@@ -425,20 +415,17 @@ fn a_press_taps_its_key_down_then_up_on_the_next_frame() {
 }
 
 #[test]
-fn a_press_and_a_hotbar_tap_in_one_frame_both_go_down_and_up() {
+fn a_press_and_a_hotbar_select_in_one_frame_both_reach_the_game() {
     let port = FakeManager::new();
     let mut output = InputOutput::new();
 
     output.apply(&InputFrame { hotbar: Some(2), ..tap("E") }, &port, None).unwrap();
     let downs = port.calls();
-    assert_eq!(downs.len(), 2);
-    assert!(downs.contains(&Call::Key(0x45, true)) && downs.contains(&Call::Key(0x32, true)), "{downs:?}");
+    assert_eq!(downs, vec![Call::Hotbar(1), Call::Key(0x45, true)]);
     port.clear();
 
     output.apply(&InputFrame::default(), &port, None).unwrap();
-    let ups = port.calls();
-    assert_eq!(ups.len(), 2);
-    assert!(ups.contains(&Call::Key(0x45, false)) && ups.contains(&Call::Key(0x32, false)), "{ups:?}");
+    assert_eq!(port.calls(), vec![Call::Key(0x45, false)]);
 }
 
 #[test]

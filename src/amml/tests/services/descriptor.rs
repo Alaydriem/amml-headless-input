@@ -6,19 +6,15 @@ use amm_core::structs::settings::HclDocument;
 use headless_input_core::config::HeadlessConfig;
 
 #[test]
-fn the_descriptor_holds_a_full_block_input_claim_and_a_shared_overlay_claim() {
+fn the_descriptor_holds_one_full_block_input_claim() {
     let d = DescriptorChecker::new(128, 256).parse(HeadlessDescriptor::TEXT).unwrap();
 
     assert_eq!(d.id(), "@alaydriem/headless-input");
-    assert_eq!(d.claims.len(), 2);
+    assert_eq!(d.claims.len(), 1);
     let claim = &d.claims[0];
     assert_eq!(claim.capability, Capability::Input);
     assert_eq!(claim.mode, ClaimMode::Exclusive);
     assert!(claim.full_block);
-    let overlay = &d.claims[1];
-    assert_eq!(overlay.capability, Capability::Overlay);
-    assert_eq!(overlay.mode, ClaimMode::Shared);
-    assert!(!overlay.full_block);
 }
 
 #[test]

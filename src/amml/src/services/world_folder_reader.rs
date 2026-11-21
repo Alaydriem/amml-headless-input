@@ -16,6 +16,9 @@ impl WorldFolderReader {
     const INSTANCE_FILE: &'static [&'static str] = &["amml", "instance.hcl"];
     const WORLDS: &'static [&'static str] = &["games", "com.mojang", "minecraftWorlds"];
     const SHARED: &'static str = "Shared";
+    const MANIFEST: &'static str = "appxmanifest.xml";
+    const RELEASE: &'static str = "Minecraft Bedrock";
+    const PREVIEW: &'static str = "Minecraft Bedrock Preview";
 
     pub fn new(game_dir: PathBuf, fallback_root: PathBuf) -> Self {
         Self { game_dir, fallback_root }
@@ -50,10 +53,32 @@ impl WorldFolderReader {
         if root.as_os_str().is_empty() {
             return WorldCatalog::new(entries);
         }
-        let users = root.join("Minecraft Bedrock").join("Users");
-        let Ok(owners) = fs::read_dir(users) else {
-            return WorldCatalog::new(entries);
-        };
+        for product in self.products() {
+            let Ok(owners) = fs::read_dir(root.join(product).join("Users")) else {
+                continue;
+            };
+            if !Self::read_owners(owners, &mut entries) {
+                break;
+            }
+        }
+        WorldCatalog::new(entries)
+    }
+
+    // the product folders the game keeps its data in: from the package identity in the game's
+    // `appxmanifest.xml`; both when the manifest is missing or names neither
+    fn products(&self) -> Vec<&'static str> {
+        let identity = fs::read_to_string(self.game_dir.join(Self::MANIFEST)).unwrap_or_default();
+        if identity.contains("Name=\"Microsoft.MinecraftWindowsBeta\"") {
+            vec![Self::PREVIEW]
+        } else if identity.contains("Name=\"Microsoft.MinecraftUWP\"") {
+            vec![Self::RELEASE]
+        } else {
+            vec![Self::RELEASE, Self::PREVIEW]
+        }
+    }
+
+    // adds the worlds of every owner folder; `false` once `MAX_WORLDS` is reached
+    fn read_owners(owners: fs::ReadDir, entries: &mut Vec<WorldEntry>) -> bool {
         for owner in owners.flatten() {
             let owner_name = owner.file_name().to_string_lossy().into_owned();
             let storage =
@@ -64,14 +89,14 @@ impl WorldFolderReader {
             };
             for level in levels.flatten() {
                 if entries.len() >= WorldCatalog::MAX_WORLDS {
-                    return WorldCatalog::new(entries);
+                    return false;
                 }
                 if let Some(entry) = Self::entry(&level.path(), &owner_name, storage) {
                     entries.push(entry);
                 }
             }
         }
-        WorldCatalog::new(entries)
+        true
     }
 
     fn entry(folder: &Path, owner: &str, storage: WorldStorage) -> Option<WorldEntry> {

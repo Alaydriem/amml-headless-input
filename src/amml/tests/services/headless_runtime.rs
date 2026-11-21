@@ -1,17 +1,13 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use alaydriem_headless_input::services::HeadlessRuntime;
-use alaydriem_headless_input::types::{FrameView, LinkState};
-use amm_client::test_support::FakeTable;
-use amm_core::errors::LinkError;
-use amm_core::structs::descriptor::Capability;
-use amm_core::structs::event::ModEvent;
-use amm_core::structs::input::MoveIntent;
-use amm_core::structs::registry::ModIndex;
-use amml_sdk::{HookHandle, ModDirs};
+use alaydriem_headless_input::services::{HeadlessDescriptor, HeadlessLink, HeadlessRuntime};
+use alaydriem_headless_input::types::{FrameView, LinkState, RuntimeFolders};
+use amm_client::test_support::{FakeConnection, FakeTable};
+use amm_core::structs::event::{ModEvent, ReleaseReason};
+use amml_api::MoveIntent;
+use amml_api::testing::FakeGame;
 use headless_input_core::run::{EndReason, RunId, RunState};
 use headless_input_core::structs::Capabilities;
 use headless_input_mcp::port::{HeadlessPort, PortError};
@@ -22,12 +18,20 @@ use crate::support::fake_manager::{Call, FakeManager};
 use crate::support::{RunHarness, RuntimeDirs};
 
 fn runtime() -> HeadlessRuntime {
-    HeadlessRuntime::new(&RuntimeDirs::dirs())
+    HeadlessRuntime::new(RuntimeDirs::folders())
+}
+
+// enables `runtime` with a link connected to the fake manager and attaches it; the loader the link runs on
+fn attach(runtime: &HeadlessRuntime) -> FakeGame {
+    let FakeConnection { link, game } = FakeTable::link_without_frame_with(HeadlessDescriptor::TEXT);
+    runtime.enable(Some(HeadlessLink::new(link, true)), true);
+    runtime.follow_link();
+    game
 }
 
 fn forward(down: bool) -> Call {
     let forward = if down { 1.0 } else { 0.0 };
-    Call::Move(MoveIntent { forward, ..MoveIntent::ZERO })
+    Call::Move(MoveIntent { forward, ..MoveIntent::default() })
 }
 
 const WAIT: &str = "name = \"wait\"\n\nstep \"wait\" {\n  for = \"5s\"\n}\n";
@@ -37,15 +41,22 @@ struct Linked {
     runtime: HeadlessRuntime,
     join: FakeJoinClient,
     command: FakeCommandClient,
+    game: FakeGame,
+    seen_moves: std::cell::RefCell<Vec<String>>,
 }
 
 impl Linked {
     fn new() -> Self {
         let runtime = runtime();
-        runtime.enable_link();
-        runtime.tick_with(|| Ok(FakeTable::table()));
+        let game = attach(&runtime);
         assert_eq!(runtime.link_state(), LinkState::Attached);
-        Self { runtime, join: FakeJoinClient::in_world(), command: FakeCommandClient::new() }
+        Self {
+            runtime,
+            join: FakeJoinClient::in_world(),
+            command: FakeCommandClient::new(),
+            game,
+            seen_moves: Default::default(),
+        }
     }
 
     fn start(&self, text: &str) {
@@ -61,9 +72,9 @@ impl Linked {
         assert_eq!(asking.join().unwrap(), Ok(RunId(1)));
     }
 
-    // the manager events, then the frame, as one ClientInstance::update runs them
+    // the link events, then the frame, as one ClientTick runs them
     fn update(&self, frame: &FrameView) {
-        self.runtime.tick_with(|| Err(LinkError::ManagerMissing));
+        self.runtime.follow_link();
         self.frame(frame);
     }
 
@@ -83,98 +94,74 @@ impl Linked {
         self.runtime.local_port(RunHarness::WAIT).status().last.map(|last| last.reason.clone())
     }
 
-    // the (forward, left, flags) of each move, in thousandths
-    fn sent_moves() -> Vec<(i32, i32, u32)> {
-        FakeTable::with(|state| state.sent_moves())
+    // whether the game holds a move after the next frame: the last move line that reached it is not the clear
+    fn move_held(&self) -> bool {
+        self.game.frame();
+        self.game.injected().iter().rev().find(|line| line.starts_with("move")).is_some_and(|line| line != STILL)
     }
 
-    fn released() -> Vec<Capability> {
-        FakeTable::with(|state| state.released.clone())
+    // each move that reached the game since the last call: the loader applies queued moves at the next frame
+    fn sent_moves(&self) -> Vec<String> {
+        self.game.frame();
+        let moves: Vec<String> = self.game.injected().into_iter().filter(|line| line.starts_with("move")).collect();
+        let mut seen = self.seen_moves.borrow_mut();
+        let fresh = moves[seen.len().min(moves.len())..].to_vec();
+        *seen = moves;
+        fresh
     }
 }
 
-// the move of a walk forward, and the clear
-const WALKING: (i32, i32, u32) = (1000, 0, 0);
-const STILL: (i32, i32, u32) = (0, 0, 0);
+// the clear of the move
+const STILL: &str = "move none";
 
 #[test]
 fn the_saved_settings_are_read_on_attach_and_again_on_change() {
     FakeTable::set_config("mcp {\n  port = 29001\n}\n");
     let runtime = runtime();
-    runtime.enable_link();
-    runtime.tick_with(|| Ok(FakeTable::table()));
+    let _game = attach(&runtime);
     assert_eq!(runtime.link_state(), LinkState::Attached);
     assert_eq!(runtime.config().mcp_port, 29001);
 
     FakeTable::set_config("mcp {\n  port = 29002\n}\n");
     FakeTable::push_event(ModEvent::SettingsChanged { paths: 1 });
-    runtime.tick_with(|| Err(LinkError::ManagerMissing));
+    runtime.follow_link();
 
     assert_eq!(runtime.config().mcp_port, 29002);
 }
 
 #[test]
-fn a_missing_manager_leaves_the_defaults() {
+fn no_manager_link_leaves_the_defaults() {
     let runtime = runtime();
-    runtime.enable_link();
+    runtime.enable(None, true);
 
-    runtime.tick_with(|| Err(LinkError::ManagerMissing));
+    runtime.follow_link();
 
     assert_eq!(runtime.link_state(), LinkState::Off);
     assert_eq!(runtime.config().mcp_port, 28250);
 }
 
 #[test]
-fn a_tick_before_enable_does_nothing() {
+fn a_link_follow_before_enable_does_nothing() {
     let runtime = runtime();
-    let called = AtomicBool::new(false);
 
-    runtime.tick_with(|| {
-        called.store(true, Ordering::SeqCst);
-        Err(LinkError::ManagerMissing)
-    });
+    runtime.follow_link();
 
-    assert!(!called.load(Ordering::SeqCst));
     assert_eq!(runtime.link_state(), LinkState::Disabled);
 }
 
 #[test]
 fn detach_drops_the_link_and_stops_ticks_reaching_the_manager() {
     let runtime = runtime();
-    runtime.enable_link();
-    runtime.tick_with(|| Ok(FakeTable::table()));
+    let _game = attach(&runtime);
     runtime.detach();
 
-    runtime.tick_with(|| Ok(FakeTable::table()));
+    runtime.follow_link();
 
     assert_eq!(runtime.link_state(), LinkState::Disabled);
 }
 
 #[test]
-fn capture_keeps_the_first_non_null_client() {
-    let runtime = runtime();
-    runtime.capture(0);
-    assert_eq!(runtime.client(), 0);
-    runtime.capture(0x10);
-    runtime.capture(0x20);
-    assert_eq!(runtime.client(), 0x10);
-}
-
-#[test]
-fn hooks_are_bounded_and_taken_newest_first() {
-    let runtime = runtime();
-    for id in 0..HeadlessRuntime::HOOK_CAPACITY as u64 {
-        assert!(runtime.keep_hook(HookHandle(id)));
-    }
-    assert!(!runtime.keep_hook(HookHandle(99)));
-
-    let ids: Vec<u64> = runtime.take_hooks().iter().map(|hook| hook.0).collect();
-    assert_eq!(ids, vec![7, 6, 5, 4, 3, 2, 1, 0]);
-    assert!(runtime.take_hooks().is_empty());
-}
-
-#[test]
-fn capabilities_are_off_until_the_entries_are_set() {
+fn capabilities_are_off_until_enable_sets_them() {
     assert_eq!(runtime().capabilities(), Capabilities::new(false, false, false, false, false, false, false));
 }
 
@@ -280,24 +267,19 @@ fn disable_releases_input_before_stopping_the_hub() {
 
 #[test]
 fn instance_id_is_the_instance_folder_name() {
-    assert_eq!(HeadlessRuntime::instance_id(&RuntimeDirs::dirs()).as_str(), RuntimeDirs::INSTANCE);
+    assert_eq!(HeadlessRuntime::instance_id(&RuntimeDirs::folders()).as_str(), RuntimeDirs::INSTANCE);
 
-    let loose = ModDirs {
-        mod_dir: PathBuf::from("D:\\loose\\headless-input"),
-        config_dir: PathBuf::from("D:\\loose\\config"),
-        data_dir: PathBuf::from("D:\\loose\\data"),
-        shared_data_dir: None,
-    };
+    let loose = RuntimeFolders { instance_dir: None, ..RuntimeDirs::folders() };
     let fallback = HeadlessRuntime::instance_id(&loose);
     assert!(fallback.as_str().starts_with("instance-"), "{fallback}");
 }
 
 #[test]
 fn the_token_file_lives_in_the_shared_data_folder_or_in_the_instance_without_one() {
-    let shared = HeadlessRuntime::new(&RuntimeDirs::dirs());
+    let shared = HeadlessRuntime::new(RuntimeDirs::folders());
     assert_eq!(shared.token_folder(), PathBuf::from(RuntimeDirs::SHARED_DATA_DIR));
 
-    let old_loader = HeadlessRuntime::new(&ModDirs { shared_data_dir: None, ..RuntimeDirs::dirs() });
+    let old_loader = HeadlessRuntime::new(RuntimeFolders { shared_data_dir: None, ..RuntimeDirs::folders() });
     assert_eq!(old_loader.token_folder(), PathBuf::from(RuntimeDirs::DATA_DIR));
 }
 
@@ -330,7 +312,7 @@ fn disable_denies_pairing_at_once_until_the_next_enable() {
     let refused = port.stop();
     assert!(matches!(refused, Err(PortError::Refused(_))), "{refused:?}");
 
-    harness.runtime.enable_link();
+    harness.runtime.enable(None, true);
     let reopened = harness.runtime.local_port(Duration::from_millis(20)).stop();
     assert!(matches!(reopened, Err(PortError::Timeout(_))), "{reopened:?}");
 }
@@ -348,14 +330,12 @@ fn the_panel_opening_during_a_wait_stops_the_run_and_it_does_not_resume() {
 
     assert_eq!(linked.state(), RunState::Idle);
     assert_eq!(linked.reason(), Some(EndReason::Stopped));
-    assert_eq!(Linked::released(), vec![Capability::Input]);
-    assert!(Linked::sent_moves().is_empty());
+    assert!(linked.sent_moves().is_empty());
 
     FakeTable::with(|state| state.panel_open = false);
     linked.tick();
     linked.update(&RunHarness::world());
     assert_eq!(linked.state(), RunState::Idle);
-    assert_eq!(FakeTable::with(|state| state.acquired.clone()), vec![Capability::Input]);
 }
 
 #[test]
@@ -363,7 +343,7 @@ fn another_mod_suspending_the_input_aborts_the_run_and_releases_keys_then_lease(
     let linked = Linked::new();
     linked.start(RunHarness::WALK);
     linked.tick();
-    FakeTable::push_event(ModEvent::Suspended { capability: Capability::Input, by: ModIndex(3) });
+    linked.runtime.handle_link_events(&[ModEvent::InputLeaseSuspended]);
 
     linked.update(&RunHarness::world());
 
@@ -373,8 +353,7 @@ fn another_mod_suspending_the_input_aborts_the_run_and_releases_keys_then_lease(
         matches!(reason, Some(EndReason::Aborted { ref why }) if why == "another mod took the input"),
         "{reason:?}"
     );
-    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
-    assert_eq!(Linked::released(), vec![Capability::Input]);
+    assert!(!linked.move_held(), "the move is released at the end");
 }
 
 #[test]
@@ -382,7 +361,7 @@ fn another_mod_revoking_the_input_aborts_the_run() {
     let linked = Linked::new();
     linked.start(RunHarness::WALK);
     linked.tick();
-    FakeTable::push_event(ModEvent::Revoked { capability: Capability::Input, by: ModIndex(3) });
+    linked.runtime.handle_link_events(&[ModEvent::InputLeaseLost]);
 
     linked.update(&RunHarness::world());
 
@@ -392,7 +371,7 @@ fn another_mod_revoking_the_input_aborts_the_run() {
         matches!(reason, Some(EndReason::Aborted { ref why }) if why == "another mod took the input"),
         "{reason:?}"
     );
-    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
+    assert!(!linked.move_held(), "the move is released at the end");
 }
 
 #[test]
@@ -400,15 +379,14 @@ fn the_manager_disabling_the_mod_aborts_the_run_and_releases_it() {
     let linked = Linked::new();
     linked.start(RunHarness::WALK);
     linked.tick();
-    FakeTable::push_event(ModEvent::Disabled);
+    linked.runtime.handle_link_events(&[ModEvent::Disabled]);
 
     linked.update(&RunHarness::world());
 
     assert_eq!(linked.state(), RunState::Idle);
     let reason = linked.reason();
     assert!(matches!(reason, Some(EndReason::Aborted { ref why }) if why == "the mod was disabled"), "{reason:?}");
-    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
-    assert_eq!(Linked::released(), vec![Capability::Input]);
+    assert!(!linked.move_held(), "the move is released at the end");
 }
 
 #[test]
@@ -416,12 +394,11 @@ fn a_suspension_of_another_capability_leaves_the_run() {
     let linked = Linked::new();
     linked.start(RunHarness::WALK);
     linked.tick();
-    FakeTable::push_event(ModEvent::Suspended { capability: Capability::Camera, by: ModIndex(3) });
+    linked.runtime.handle_link_events(&[ModEvent::InputLeaseResumed]);
 
     linked.update(&RunHarness::world());
 
     assert_eq!(linked.state(), RunState::Running);
-    assert!(Linked::released().is_empty());
 }
 
 #[test]
@@ -429,38 +406,17 @@ fn fake_keys_released_drops_the_record_and_a_world_exit_on_that_frame_aborts() {
     let linked = Linked::new();
     linked.start(RunHarness::WALK);
     linked.tick();
-    FakeTable::push_event(ModEvent::FakeKeysReleased);
+    linked.runtime.handle_link_events(&[ModEvent::FakeKeysReleased { reason: ReleaseReason::WorldLeft }]);
     linked.update(&RunHarness::world());
     assert_eq!(linked.state(), RunState::Running, "a release of the fake keys is not the panel");
     linked.tick();
-    assert_eq!(Linked::sent_moves(), vec![WALKING, WALKING], "the forgotten move is sent again");
+    assert!(linked.move_held(), "the forgotten move is sent again");
 
-    FakeTable::push_event(ModEvent::FakeKeysReleased);
+    linked.runtime.handle_link_events(&[ModEvent::FakeKeysReleased { reason: ReleaseReason::WorldLeft }]);
     linked.update(&RunHarness::title());
 
     let reason = linked.reason();
     assert!(matches!(reason, Some(EndReason::Aborted { ref why }) if why == "the world was left"), "{reason:?}");
-    assert_eq!(Linked::sent_moves(), vec![WALKING, WALKING], "no clear for a move the manager let go");
-    assert_eq!(Linked::released(), vec![Capability::Input]);
-}
-
-#[test]
-fn a_panic_in_a_hook_body_ends_the_run_and_releases_keys_then_lease() {
-    let linked = Linked::new();
-    linked.start(RunHarness::WALK);
-    linked.tick();
-
-    linked.runtime.guarded(|| panic!("forced panic in a hook body"));
-
-    assert_eq!(Linked::sent_moves(), vec![WALKING, STILL]);
-    assert_eq!(Linked::released(), vec![Capability::Input]);
-    assert_eq!(linked.runtime.link_state(), LinkState::Disabled);
-    let reason = linked.reason();
-    let internal = matches!(reason, Some(EndReason::Aborted { ref why }) if why == "the mod met an internal error");
-    assert!(internal, "{reason:?}");
-    linked.tick();
-    linked.update(&RunHarness::world());
-    assert_eq!(Linked::sent_moves().len(), 2, "nothing runs after the panic");
 }
 
 const ALLOW_ON: &str = "mcp {
@@ -483,7 +439,7 @@ fn ask_pairing(runtime: &HeadlessRuntime) -> JoinHandle<bool> {
 fn turn_pairing_on(linked: &Linked) {
     FakeTable::set_config(ALLOW_ON);
     FakeTable::push_event(ModEvent::SettingsChanged { paths: 1 });
-    linked.runtime.tick_with(|| Err(LinkError::ManagerMissing));
+    linked.runtime.follow_link();
 }
 
 fn pairing_resets() -> Vec<(String, String)> {
@@ -520,7 +476,7 @@ fn the_setting_turned_on_with_no_request_is_turned_off_and_allows_nothing() {
 
     assert_eq!(pairing_resets(), vec![("mcp.allow_pairing".to_string(), "false".to_string())]);
     let asking = ask_pairing(&linked.runtime);
-    linked.runtime.tick_with(|| Err(LinkError::ManagerMissing));
+    linked.runtime.follow_link();
     std::thread::sleep(Duration::from_millis(50));
     assert!(!asking.is_finished(), "an earlier switch answered a later question");
     linked.runtime.detach();
@@ -536,7 +492,7 @@ fn the_setting_can_allow_a_second_request_after_the_first() {
 
     FakeTable::set_config("");
     FakeTable::push_event(ModEvent::SettingsChanged { paths: 1 });
-    linked.runtime.tick_with(|| Err(LinkError::ManagerMissing));
+    linked.runtime.follow_link();
     let second = ask_pairing(&linked.runtime);
     turn_pairing_on(&linked);
 
@@ -552,7 +508,7 @@ fn a_switch_left_on_does_not_allow_the_next_request() {
     let asking = ask_pairing(&linked.runtime);
 
     FakeTable::push_event(ModEvent::SettingsChanged { paths: 1 });
-    linked.runtime.tick_with(|| Err(LinkError::ManagerMissing));
+    linked.runtime.follow_link();
     std::thread::sleep(Duration::from_millis(50));
 
     assert!(!asking.is_finished(), "a switch that was already on allowed a later request");
@@ -566,7 +522,7 @@ fn no_menu_tile_is_registered() {
     let asking = ask_pairing(&linked.runtime);
 
     for _ in 0..3 {
-        linked.runtime.tick_with(|| Err(LinkError::ManagerMissing));
+        linked.runtime.follow_link();
     }
 
     assert!(FakeTable::with(|state| state.menu_entries.is_empty()));

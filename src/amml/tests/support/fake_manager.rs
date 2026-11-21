@@ -2,7 +2,8 @@ use std::cell::{Cell, RefCell};
 
 use alaydriem_headless_input::errors::{LeaseError, OutputError};
 use alaydriem_headless_input::traits::ManagerPort;
-use amm_core::structs::input::{MoveIntent, PointerOp};
+use amm_client::link::PointerOp;
+use amml_api::MoveIntent;
 
 // one call the output side made on the manager
 #[derive(Debug, Clone, PartialEq)]
@@ -12,6 +13,8 @@ pub enum Call {
     Key(u32, bool),
     Pointer(PointerOp),
     Move(MoveIntent),
+    // a hotbar select through the game HUD, slot 0 to 8
+    Hotbar(u8),
     // a step outside the manager the test wrote into the record, to check the order
     Mark(&'static str),
 }
@@ -121,7 +124,7 @@ impl ManagerPort for FakeManager {
         if !self.move_supported {
             return Err(OutputError::Unsupported);
         }
-        if intent.is_zero() {
+        if intent == MoveIntent::default() {
             return Ok(());
         }
         if let Some(error) = self.move_error.borrow().clone() {
@@ -134,9 +137,14 @@ impl ManagerPort for FakeManager {
         self.record(Call::Pointer(op));
         let down = match op {
             PointerOp::Button { down, .. } => down,
-            PointerOp::Wheel { .. } | PointerOp::Turn { .. } => true,
+            PointerOp::Wheel { .. } | PointerOp::Turn(_) => true,
         };
         self.answer(down)
+    }
+
+    fn select_hotbar(&self, index: u8) -> Result<(), OutputError> {
+        self.record(Call::Hotbar(index));
+        self.answer(true)
     }
 
     fn panel_open(&self) -> bool {

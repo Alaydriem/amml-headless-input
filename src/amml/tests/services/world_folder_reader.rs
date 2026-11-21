@@ -32,9 +32,19 @@ impl Fixture {
         fs::write(file, text).unwrap();
     }
 
+    fn manifest(&self, identity: &str) {
+        fs::create_dir_all(self.game()).unwrap();
+        let text = format!("<Package><Identity Name=\"{identity}\" Version=\"1.0.0.0\" /></Package>");
+        fs::write(self.game().join("appxmanifest.xml"), text).unwrap();
+    }
+
     fn world(root: &Path, owner: &str, id: &str, name: Option<&str>, level_dat: bool) {
+        Self::world_in(root, "Minecraft Bedrock", owner, id, name, level_dat);
+    }
+
+    fn world_in(root: &Path, product: &str, owner: &str, id: &str, name: Option<&str>, level_dat: bool) {
         let folder = root
-            .join("Minecraft Bedrock")
+            .join(product)
             .join("Users")
             .join(owner)
             .join("games")
@@ -155,4 +165,35 @@ fn an_empty_fallback_root_reads_nothing() {
     let reader = WorldFolderReader::new(fixture.game(), PathBuf::new());
     assert!(reader.root().as_os_str().is_empty());
     assert!(reader.read().entries().is_empty());
+}
+
+#[test]
+fn a_preview_game_reads_the_preview_worlds_only() {
+    let fixture = Fixture::new();
+    fixture.manifest("Microsoft.MinecraftWindowsBeta");
+    Fixture::world_in(&fixture.fallback(), "Minecraft Bedrock Preview", "123", "preview", None, true);
+    Fixture::world_in(&fixture.fallback(), "Minecraft Bedrock", "123", "release", None, true);
+    let catalog = fixture.reader().read();
+    assert!(catalog.find("preview").is_some());
+    assert!(catalog.find("release").is_none());
+}
+
+#[test]
+fn a_release_game_reads_the_release_worlds_only() {
+    let fixture = Fixture::new();
+    fixture.manifest("Microsoft.MinecraftUWP");
+    Fixture::world_in(&fixture.fallback(), "Minecraft Bedrock Preview", "123", "preview", None, true);
+    Fixture::world_in(&fixture.fallback(), "Minecraft Bedrock", "123", "release", None, true);
+    let catalog = fixture.reader().read();
+    assert!(catalog.find("release").is_some());
+    assert!(catalog.find("preview").is_none());
+}
+
+#[test]
+fn without_a_manifest_both_products_are_read() {
+    let fixture = Fixture::new();
+    Fixture::world_in(&fixture.fallback(), "Minecraft Bedrock Preview", "123", "preview", None, true);
+    Fixture::world_in(&fixture.fallback(), "Minecraft Bedrock", "123", "release", None, true);
+    let catalog = fixture.reader().read();
+    assert!(catalog.find("release").is_some() && catalog.find("preview").is_some());
 }

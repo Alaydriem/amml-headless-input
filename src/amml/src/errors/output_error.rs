@@ -1,5 +1,5 @@
-use amm_abi::types::AmmStatus;
 use amm_core::errors::LinkError;
+use amml_api::ApiError;
 
 // Why the manager did not take a fake key, pointer action or move. A run ends aborted on any of them, with `why` as
 // its reason. None of them allocates, so the error is free on the tick path
@@ -14,10 +14,10 @@ pub enum OutputError {
     // the manager key queue is full
     #[error("{}", Self::BUSY)]
     Busy,
-    // the manager does not know the game's keyboard controller yet, or the game has no local player in a world
+    // the loader is not ready for the input yet (before the first frame), or the game shows no HUD for a hotbar select
     #[error("{}", Self::NOT_READY)]
     NotReady,
-    // the manager is older than the call, or its game lacks the entries the call needs
+    // the loader does not serve this input on this game build
     #[error("{}", Self::UNSUPPORTED)]
     Unsupported,
     #[error("the mod manager did not take the input: {0}")]
@@ -28,20 +28,25 @@ impl OutputError {
     const REFUSED: &'static str = "the mod manager refused the input: its panel opened or another mod took the input";
     const QUEUE_FULL: &'static str = "the mod manager pointer queue is full";
     const BUSY: &'static str = "the mod manager key queue is full";
-    const NOT_READY: &'static str =
-        "the mod manager is not ready for the input: no keyboard controller yet, or no local player in a world";
+    const NOT_READY: &'static str = "the loader is not ready for the input yet";
     const UNSUPPORTED: &'static str = "the mod manager does not support this input";
     const LINK: &'static str = "the mod manager did not take the input";
 
     // the error of a send the manager answered with `error`
     pub fn from_link(error: LinkError) -> Self {
         match error {
-            LinkError::Status(code) if code == AmmStatus::NotPermitted as i32 => Self::Refused,
-            LinkError::Status(code) if code == AmmStatus::QueueFull as i32 => Self::QueueFull,
-            LinkError::Status(code) if code == AmmStatus::Busy as i32 => Self::Busy,
-            LinkError::Status(code) if code == AmmStatus::NotReady as i32 => Self::NotReady,
-            LinkError::Status(code) if code == AmmStatus::Unsupported as i32 => Self::Unsupported,
+            LinkError::Api(error) => Self::from_api(error),
             other => Self::Link(other),
+        }
+    }
+
+    // the error of a game call the loader answered with `error`
+    pub fn from_api(error: ApiError) -> Self {
+        match error {
+            ApiError::Refused => Self::Refused,
+            ApiError::NotReady => Self::NotReady,
+            ApiError::NotAvailable => Self::Unsupported,
+            other => Self::Link(LinkError::Api(other)),
         }
     }
 

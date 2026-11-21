@@ -1,7 +1,10 @@
+use amml_api::Screen;
 use headless_input_core::player::ScreenKind;
 
-// Turns the name of the top screen (`ClientInstance::getTopScreenName`) into the kind of screen core tells apart. A
-// toast is drawn over whatever screen is under it, so it changes nothing: it gives the kind the last read gave
+// Turns the top screen the loader reports (`Client::top_screen`) into a screen name, and a name into the kind of
+// screen core tells apart. The names are the game's own names of those screens; the loader gives no other name, so
+// a screen of no known kind has the empty name. A toast is drawn over whatever screen is under it, so it changes
+// nothing: it gives the kind the last read gave
 pub struct ScreenReader;
 
 impl ScreenReader {
@@ -17,6 +20,25 @@ impl ScreenReader {
     pub const PROGRESS_MARK: &'static str = "progress_screen";
     // a notice (achievement, server message) over the screen under it
     pub const TOAST: &'static str = "toast_screen";
+
+    // a loading screen of any kind
+    pub const LOADING: &'static str = Self::PROGRESS_MARK;
+    pub const PAUSE: &'static str = "pause_screen";
+    // a screen that shows a container
+    pub const CONTAINER: &'static str = "container_screen";
+
+    // the name of the screen the loader reports; the empty name for `Screen::Other` and a screen this mod does not know
+    pub fn name_of(screen: Screen) -> &'static str {
+        match screen {
+            Screen::Start => Self::START,
+            Screen::Hud => Self::HUD,
+            Screen::Loading => Self::LOADING,
+            Screen::Toast => Self::TOAST,
+            Screen::Pause => Self::PAUSE,
+            Screen::Container => Self::CONTAINER,
+            _ => "",
+        }
+    }
 
     // whether the name is the menus: the title screen, or an Ore UI page when the client has no local player. An
     // Ore UI page over a world is a screen opened over it

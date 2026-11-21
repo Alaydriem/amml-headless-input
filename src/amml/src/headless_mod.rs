@@ -1,126 +1,119 @@
-use std::ffi::c_void;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use amml_game::{EntryId, EntryNeed, GameEntries, GameError};
-use amml_sdk::{AmmlMod, Api, ModDirs, SdkError};
+use amm_client::link::ManagerLink;
+use amml_api::amml_abi::{
+    ClientTick, GameTick, InjectedInputReleased, InputLeaseLost, InputLeaseResumed, InputLeaseSuspended,
+    JoinServerResult, ModsLoaded, ProviderGone, ProviderReady, ScreenshotTaken, ScreenshotWritten, WorldLeft,
+};
+use amml_api::{AmmlMod, ApiError, Area, Ctx, DisableCtx, Uses};
+use headless_input_core::structs::Capabilities;
 
-use crate::detours::{client_on_tick, client_update};
-use crate::game::HeadlessEntry;
-use crate::services::{AmmlHost, HeadlessRuntime, HookInstaller, HostResolver};
-use crate::traits::GameHost;
-use crate::types::HookSpec;
+use crate::services::{HeadlessDescriptor, HeadlessLink, HeadlessListeners, HeadlessRuntime};
+use crate::types::RuntimeFolders;
 
-// the AMML entry point: load makes the runtime, enable installs the hooks and starts the MCP side, disable detaches
-// (input released, the lease ended, the hub and Tokio stopped) and then removes the hooks. The manager link is made on
-// the first ClientInstance::update after enable
+// what the enabled mod owns. `disable` takes it, which drops the listeners, then ends the run, stops the hub and
+// closes the link
+static RUNNING: Mutex<Option<HeadlessListeners>> = Mutex::new(None);
+
+// the AMML entry point: enable makes the runtime, starts the manager link, the listeners and the MCP side; disable
+// removes them
 pub struct HeadlessMod;
 
 impl HeadlessMod {
-    // the id as the module string the loader and the hook host take; a test checks it against `AmmlMod::id`
+    // the id as the loader names the mod; a test checks it against `AmmlMod::id`
     pub const MODULE: &'static str = "@alaydriem/headless-input";
-    pub const UPDATE: &'static str = "ClientInstance.update";
-    pub const TICK: &'static str = "ClientInstance.onTick";
 
-    // every hook, in install order. Without the client tick no run advances, so it is required
-    pub fn hooks() -> [HookSpec; 2] {
-        [
-            HookSpec {
-                entry: Self::UPDATE,
-                detour: client_update::detour as *const c_void,
-                original: client_update::GUARD.original(),
-                required: true,
-                priority: 0,
-                feature: "the frame",
-            },
-            HookSpec {
-                entry: Self::TICK,
-                detour: client_on_tick::detour as *const c_void,
-                original: client_on_tick::GUARD.original(),
-                required: true,
-                priority: 0,
-                feature: "the client tick",
-            },
-        ]
-    }
-
-    // the game reads beyond the hooks. `ClientInstance.gameCallbacksOffset` is required: the client tick finds its
-    // client through it. A missing optional entry turns off only its capability
-    pub fn wanted() -> [(EntryId, EntryNeed); 26] {
-        const POSITION: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::POSITION };
-        const ROTATION: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::ROTATION };
-        const DIMENSION: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::DIMENSION };
-        const JOIN: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::JOIN };
-        const TAB: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::SERVERS_TAB };
-        const JOIN_WORLD: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::JOIN_WORLD };
-        const LEAVE: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::LEAVE };
-        const COMMAND: EntryNeed = EntryNeed::Optional { feature: HeadlessEntry::COMMAND };
-        [
-            (EntryId::CLIENT_INSTANCE_GET_LOCAL_PLAYER, EntryNeed::Required),
-            (HeadlessEntry::CLIENT_INSTANCE_GET_TOP_SCREEN_NAME, EntryNeed::Required),
-            (HeadlessEntry::CLIENT_INSTANCE_VTABLE, EntryNeed::Required),
-            (HeadlessEntry::CLIENT_INSTANCE_GAME_CALLBACKS_OFFSET, EntryNeed::Required),
-            (EntryId::ACTOR_STATE_VECTOR_COMPONENT, POSITION),
-            (EntryId::STATE_VECTOR_COMPONENT_POS, POSITION),
-            (EntryId::ACTOR_ACTOR_ROTATION_COMPONENT, ROTATION),
-            (EntryId::ACTOR_ROTATION_COMPONENT_ROT, ROTATION),
-            (EntryId::ACTOR_GET_DIMENSION, DIMENSION),
-            (EntryId::DIMENSION_GET_DIMENSION_ID, DIMENSION),
-            (HeadlessEntry::SERVER_WORLD_JOINER_JOIN_EXTERNAL_SERVER, JOIN),
-            (HeadlessEntry::MINECRAFT_GAME_GET_SERVER_WORLD_JOINER_OWNER, JOIN),
-            (HeadlessEntry::NETWORK_WORLD_JOINER_OWNER_NETWORK_WORLD_JOINER, JOIN),
-            (HeadlessEntry::NETWORK_WORLD_JOINER_SERVER_WORLD_JOINER, JOIN),
-            (EntryId::CLIENT_INSTANCE_GET_MINECRAFT_GAME, JOIN),
-            (EntryId::MINECRAFT_GAME_IS_PRIMARY_CLIENT_INSTANCE_READY, JOIN),
-            (EntryId::CLIENT_INSTANCE_REQUEST_LEAVE_GAME, LEAVE),
-            (HeadlessEntry::CLIENT_INSTANCE_GET_CURRENT_UI_ROUTER, TAB),
-            (HeadlessEntry::ORE_UI_ROUTER_PUSH_ROUTE, TAB),
-            (HeadlessEntry::MINECRAFT_PACKETS_CREATE_PACKET, COMMAND),
-            (HeadlessEntry::CLIENT_INSTANCE_GET_PACKET_SENDER, COMMAND),
-            (HeadlessEntry::PACKET_SENDER_SEND, COMMAND),
-            (HeadlessEntry::COMMAND_REQUEST_PACKET_M_COMMAND, COMMAND),
-            (HeadlessEntry::COMMAND_REQUEST_PACKET_SIZE, COMMAND),
-            (HeadlessEntry::LOCAL_WORLD_STARTER_START_LOCAL_WORLD, JOIN_WORLD),
-            (HeadlessEntry::WORLD_SYSTEM_LOCAL_WORLD_STARTER, JOIN_WORLD),
-        ]
-    }
-
-    // the body of enable: the game entries and the required hook entries must resolve, then the hooks go in and
-    // the next frame reaches the manager
-    pub fn enable_with<H: GameHost>(host: &H, runtime: &HeadlessRuntime) -> Result<(), SdkError> {
-        let entries = GameEntries::resolve(&HostResolver(host), &Self::wanted()).map_err(|error| match error {
-            GameError::MissingEntry { id } => SdkError::MissingEntry(id),
-            other => SdkError::Mod(other.to_string()),
-        })?;
-        HookInstaller::install(host, runtime, &Self::hooks())?;
-        for (feature, cause) in entries.off_features() {
-            host.warn(&format!("{feature} is off ({cause})"));
-        }
-        runtime.set_entries(entries);
-        runtime.enable_link();
-        Ok(())
+    // the reads and calls this game serves, from the loader's areas
+    pub fn capabilities(ctx: &Ctx) -> Capabilities {
+        let has = |areas: &[Area]| areas.iter().all(|area| ctx.supports(*area));
+        let actor = has(&[Area::ACTOR_READ.at(2)]);
+        Capabilities::new(
+            actor,
+            actor,
+            actor,
+            has(&[Area::CLIENT_JOIN_SERVER, Area::CLIENT_CAN_JOIN, Area::CLIENT_LEAVE_WORLD]),
+            has(&[Area::CLIENT_LEAVE_WORLD]),
+            has(&[Area::CLIENT_SEND_COMMAND]),
+            has(&[Area::CLIENT_START_LOCAL_WORLD, Area::CLIENT_CAN_JOIN, Area::CLIENT_LEAVE_WORLD]),
+        )
     }
 }
 
 impl AmmlMod for HeadlessMod {
     const NAMESPACE: &'static str = "alaydriem";
     const NAME: &'static str = "headless-input";
+    const USES: Uses = amml_api::amml_uses! {
+        feature "core" {
+            required ClientTick;
+            required GameTick;
+            required WorldLeft;
+            required ProviderReady;
+            required ProviderGone;
+            required ModsLoaded;
+            required area Area::CLIENT_READ;
+            required area Area::CLIENT_TOP_SCREEN;
+        }
+        feature "input" {
+            required InputLeaseSuspended;
+            required InputLeaseResumed;
+            required InputLeaseLost;
+            required InjectedInputReleased;
+            required area Area::INPUT_LEASE;
+            required area Area::MOVE;
+            required area Area::KEY_INJECT;
+            required area Area::MOUSE_INJECT;
+            required area Area::TURN;
+        }
+        feature "player" {
+            required area Area::ACTOR_READ.at(2);
+        }
+        feature "hotbar" {
+            required area Area::HUD_SELECT_HOTBAR;
+        }
+        feature "join" {
+            required JoinServerResult;
+            required area Area::CLIENT_JOIN_SERVER;
+            required area Area::CLIENT_CAN_JOIN;
+            required area Area::CLIENT_LEAVE_WORLD;
+            required area Area::CLIENT_START_LOCAL_WORLD;
+            required area Area::CLIENT_OPEN_MENU;
+        }
+        feature "command" {
+            required area Area::CLIENT_SEND_COMMAND;
+        }
+        feature "screenshot" {
+            required ScreenshotTaken;
+            required ScreenshotWritten;
+            required area Area::OVERLAY_SCREENSHOT;
+        }
+    };
 
-    fn load(api: &Api) -> Result<(), SdkError> {
-        let dirs = ModDirs::new(api, Self::MODULE)?;
-        HeadlessRuntime::install(&dirs);
-        Ok(())
-    }
-
-    fn enable(api: &Api) -> Result<(), SdkError> {
-        let runtime = HeadlessRuntime::get().ok_or_else(|| SdkError::Mod("load did not run".to_string()))?;
-        let host = AmmlHost::new(api, Self::MODULE);
-        Self::enable_with(&host, runtime)?;
+    fn enable(ctx: &Ctx) -> Result<(), ApiError> {
+        let log = ctx.log();
+        let runtime = Arc::new(HeadlessRuntime::new(RuntimeFolders::from_dirs(&ctx.dirs())));
+        runtime.set_capabilities(Self::capabilities(ctx));
+        let screenshots = ctx.supports(Area::OVERLAY_SCREENSHOT);
+        let link = match ManagerLink::start_without_frame(ctx, HeadlessDescriptor::TEXT) {
+            Ok(link) => Some(HeadlessLink::new(link, screenshots)),
+            Err(error) => {
+                let error = error.to_string();
+                log.error("the mod manager link did not start; runs that need input are refused", &[("error", &error)]);
+                None
+            }
+        };
+        runtime.enable(link, screenshots);
+        let listeners = HeadlessListeners::start(ctx, Arc::clone(&runtime)).inspect_err(|error| {
+            log.error("headless-input off", &[("error", &format!("{error:?}"))]);
+        })?;
         runtime.start_services();
+        *RUNNING.lock().unwrap_or_else(PoisonError::into_inner) = Some(listeners);
         Ok(())
     }
 
-    fn disable(api: &Api) {
-        let Some(runtime) = HeadlessRuntime::get() else { return };
-        runtime.detach();
-        HookInstaller::remove_all(&AmmlHost::new(api, Self::MODULE), runtime);
+    fn disable(_ctx: &Ctx, _how: &DisableCtx) {
+        let running = RUNNING.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(listeners) = running {
+            listeners.stop();
+        }
     }
 }
