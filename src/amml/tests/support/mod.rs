@@ -1,5 +1,4 @@
 pub mod fake_command_client;
-pub mod fake_host;
 pub mod fake_join_client;
 pub mod fake_launcher;
 pub mod fake_manager;

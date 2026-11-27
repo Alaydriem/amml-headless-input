@@ -1,234 +1,70 @@
-use std::ffi::c_void;
-
-use amml_game::{ClientInstance, EntryId, GameEntries, GameHeap, RawObject};
-use amml_msvc::{MemberCall, MsvcString};
+use amml_api::{ApiError, Client, JoinTarget as GameTarget, Menu};
 use headless_input_core::structs::{JoinTarget, WorldTarget};
 
-use crate::game::{GameStrings, GameText, HeadlessEntry};
-use crate::join::{JoinClient, JoinResultCallback, LocalWorldStarterLocator, ServerJoinerLocator};
+use crate::game::ScreenReader;
+use crate::join::{JoinClient, JoinCodes};
 
-// The game's client behind the `JoinClient` trait: each call reads the code pointer of its entry and calls it. A call
-// whose entry is off does nothing and answers no. Game thread
-pub struct GameJoinClient<'a> {
-    client: ClientInstance<'a>,
-    entries: &'a GameEntries,
+// The game's client behind the `JoinClient` trait, through the loader's session actions. A call the loader refuses
+// answers no. Game thread
+pub struct GameJoinClient<'a, 'f> {
+    client: &'a Client<'f>,
+    codes: &'a JoinCodes,
 }
 
-impl<'a> GameJoinClient<'a> {
-    pub fn new(client: ClientInstance<'a>, entries: &'a GameEntries) -> Self {
-        Self { client, entries }
-    }
-
-    // a function of the client's own vtable
-    #[allow(unsafe_code)]
-    fn client_function(&self, id: EntryId) -> Option<*const c_void> {
-        let slot = self.entries.get(id)?;
-        // SAFETY: the wrapper holds a live ClientInstance, whose first qword is its vtable, and `id` is a slot entry
-        // of it
-        unsafe { RawObject::slot(self.client.as_ptr(), slot) }
-    }
-
-    // the game's ServerWorldJoiner; None when an entry is off or a step of the chain is null
-    #[allow(unsafe_code)]
-    fn joiner(&self) -> Option<*mut c_void> {
-        let owner_slot = self.entries.get(HeadlessEntry::MINECRAFT_GAME_GET_SERVER_WORLD_JOINER_OWNER)?;
-        let joiner_at = self.entries.get(HeadlessEntry::NETWORK_WORLD_JOINER_OWNER_NETWORK_WORLD_JOINER)?;
-        let member_at = self.entries.get(HeadlessEntry::NETWORK_WORLD_JOINER_SERVER_WORLD_JOINER)?;
-        let game = self.client.minecraft_game()?;
-        // SAFETY: the client returned a non-null IMinecraftGame*, a live MinecraftGame, and the entries describe the
-        // chain from it to the joiner. The call is on the game thread
-        unsafe { ServerJoinerLocator::locate(game, owner_slot, joiner_at, member_at) }
+impl<'a, 'f> GameJoinClient<'a, 'f> {
+    pub fn new(client: &'a Client<'f>, codes: &'a JoinCodes) -> Self {
+        Self { client, codes }
     }
 }
 
-impl GameJoinClient<'_> {
-    // the game's LocalWorldStarter; None when an entry is off or a step of the chain is null
-    #[allow(unsafe_code)]
-    fn world_starter(&self) -> Option<*mut c_void> {
-        let owner_slot = self.entries.get(HeadlessEntry::MINECRAFT_GAME_GET_SERVER_WORLD_JOINER_OWNER)?;
-        let starter_at = self.entries.get(HeadlessEntry::WORLD_SYSTEM_LOCAL_WORLD_STARTER)?;
-        let game = self.client.minecraft_game()?;
-        // SAFETY: the client returned a non-null IMinecraftGame*, a live MinecraftGame, and the entries describe the
-        // chain from it to the starter. The call is on the game thread
-        unsafe { LocalWorldStarterLocator::locate(game, owner_slot, starter_at) }
-    }
-}
-
-impl JoinClient for GameJoinClient<'_> {
-    #[allow(unsafe_code)]
+impl JoinClient for GameJoinClient<'_, '_> {
     fn is_primary_ready(&self) -> bool {
-        let Some(slot) = self.entries.get(EntryId::MINECRAFT_GAME_IS_PRIMARY_CLIENT_INSTANCE_READY) else {
-            return false;
-        };
-        let Some(game) = self.client.minecraft_game() else {
-            return false;
-        };
-        // SAFETY: the client returned a non-null IMinecraftGame*, a live MinecraftGame whose first qword is the
-        // MinecraftGame vtable, and the entry is a slot of it
-        let Some(function) = (unsafe { RawObject::slot(game, slot) }) else {
-            return false;
-        };
-        // SAFETY: the slot holds `bool IMinecraftGame::isPrimaryClientInstanceReady() const`, and the game is live
-        unsafe { RawObject::call_bool(function, game) }
+        self.client.can_join().unwrap_or(false)
     }
 
-    // a client with a local player is in a world
     fn is_in_game(&self) -> bool {
         self.client.local_player().is_some()
     }
 
-    // empty when the entry is off or there is no game heap to free a long name with; the game is then not called
-    #[allow(unsafe_code)]
     fn top_screen_name(&self) -> String {
-        let Some(function) = self.client_function(HeadlessEntry::CLIENT_INSTANCE_GET_TOP_SCREEN_NAME) else {
-            return String::new();
-        };
-        let Some(heap) = GameHeap::msvc() else {
-            return String::new();
-        };
-        // SAFETY: the slot holds `std::string IClientInstance::getTopScreenName() const`, which returns the string
-        // through a hidden pointer, and the client is live
-        let mut name: MsvcString = unsafe { MemberCall::call_sret0(function, self.client.as_ptr()) };
-        let text = GameText::text(&name).into_owned();
-        // SAFETY: the game allocated the string's block, if it has one, with the allocator `heap` mirrors; the string
-        // is not used again
-        unsafe { name.release(&heap) };
-        text
+        self.client.top_screen().map(ScreenReader::name_of).unwrap_or("").to_string()
     }
 
-    #[allow(unsafe_code)]
     fn request_leave_game(&self) {
-        let Some(function) = self.client_function(EntryId::CLIENT_INSTANCE_REQUEST_LEAVE_GAME) else {
-            return;
-        };
-        // SAFETY: the slot holds `void ClientInstance::requestLeaveGame(bool, bool)`: this in rcx, the two bools in
-        // dl and r8b
-        let call: unsafe extern "C" fn(*mut c_void, bool, bool) = unsafe { std::mem::transmute(function) };
-        // SAFETY: the client is live and the signature is as above
-        unsafe { call(self.client.as_ptr(), true, false) };
+        if let Err(error) = self.client.leave_world() {
+            curia::warn!("the loader refused the world leave", { error: format!("{error:?}") });
+        }
     }
 
-    // the game's own call for the Servers tab: the router comes from the client's `getCurrentUIRouter` slot, and the
-    // route goes in as a std::string with mode 0
-    #[allow(unsafe_code)]
     fn open_servers_tab(&self) -> bool {
-        if self.client.local_player().is_some() {
-            return false;
+        self.client.open_menu(Menu::Servers).is_ok()
+    }
+
+    fn join_server(&self, target: &JoinTarget) -> bool {
+        let host = target.host.as_str();
+        match self.client.join_server(GameTarget { host, port: target.port, name: None }) {
+            Ok(_) => true,
+            Err(error) => {
+                curia::debug!("the loader refused the server join", { error: format!("{error:?}") });
+                false
+            }
         }
-        let Some(navigate) = self.entries.get(HeadlessEntry::ORE_UI_ROUTER_PUSH_ROUTE) else {
-            return false;
-        };
-        let Some(getter) = self.client_function(HeadlessEntry::CLIENT_INSTANCE_GET_CURRENT_UI_ROUTER) else {
-            return false;
-        };
-        // an address of 0 is no function: never made into a function pointer
-        let Ok(navigate) = usize::try_from(navigate) else {
-            return false;
-        };
-        if navigate == 0 {
-            return false;
+    }
+
+    // the game's "not ready" answer is the core's not ready code; a call the loader refuses otherwise asks again
+    fn join_world(&self, target: &WorldTarget) -> Option<i32> {
+        match self.client.start_local_world(&target.level_id) {
+            Ok(outcome) => Some(JoinCodes::start_code(outcome)),
+            Err(ApiError::NotReady) => Some(headless_input_core::run::WorldStartCodes::NOT_READY),
+            Err(_) => None,
         }
-        let Some(heap) = GameHeap::msvc() else {
-            return false;
-        };
-        // SAFETY: the slot holds `OreUI::Router& IClientInstance::getCurrentUIRouter()`, and the client is live
-        let Some(navigator) = (unsafe { RawObject::call_pointer(getter, self.client.as_ptr()) }) else {
-            return false;
-        };
-        let Some(mut route) = GameStrings::heap_string(&heap, HeadlessEntry::SERVERS_ROUTE) else {
-            return false;
-        };
-        // SAFETY: the entry is `bool OreUI::Router::_pushRoute(const std::string& route, RouterPushMode mode)`: this in rcx, the
-        // route in rdx and the mode in r8d. The game copies the route, so the string stays ours
-        let call: unsafe extern "C" fn(*mut c_void, *const MsvcString, i32) -> u8 =
-            unsafe { std::mem::transmute(navigate) };
-        // SAFETY: the navigator is live and on the game thread (the caller), and the route string is live
-        let accepted = unsafe { call(navigator, &raw const route, 0) };
-        // SAFETY: the string came from `GameStrings::heap_string` with this heap and is not used again; the call copied it
-        unsafe { route.release(&heap) };
-        accepted != 0
     }
 
     fn take_join_result(&self) -> Option<i32> {
-        JoinResultCallback::take_result()
+        self.codes.take()
     }
 
     fn clear_join_result(&self) {
-        JoinResultCallback::clear_result();
-    }
-
-    // the game's own host and port join, as the party travel code calls it: the game resolves the host, tests the
-    // connection and joins; the answer arrives later through the callback. A null step of the chain to the joiner gives
-    // no call
-    #[allow(unsafe_code)]
-    fn join_server(&self, target: &JoinTarget) -> bool {
-        let Some(joiner) = self.joiner() else {
-            return false;
-        };
-        let Some(function) = self.entries.get(HeadlessEntry::SERVER_WORLD_JOINER_JOIN_EXTERNAL_SERVER) else {
-            return false;
-        };
-        // an address of 0 is no function: never made into a function pointer
-        let Ok(function) = usize::try_from(function) else {
-            return false;
-        };
-        if function == 0 {
-            return false;
-        }
-        let Some(heap) = GameHeap::msvc() else {
-            return false;
-        };
-        let Some(mut host_text) = GameStrings::heap_string(&heap, &target.host) else {
-            return false;
-        };
-        let Some(mut name_text) = GameStrings::heap_string(&heap, &target.host) else {
-            // SAFETY: the string came from `GameStrings::heap_string` with this heap and is not used again
-            unsafe { host_text.release(&heap) };
-            return false;
-        };
-        // the callback is passed by value: the game moves it out and destroys what is left, and the block is ours
-        let mut callback = JoinResultCallback::function();
-        // SAFETY: the entry is `void World::ServerWorldJoiner::joinExternalServer(const std::string& host, unsigned
-        // short port, const std::string& name, std::function<void(JoinServerWorldResult)> onResult)`: this in rcx,
-        // the host in rdx, the port in r8w, the name in r9 and a pointer to the by-value std::function on the stack.
-        // The game copies both strings, so they stay ours
-        let join: unsafe extern "C" fn(*mut c_void, *const MsvcString, u16, *const MsvcString, *mut [*mut c_void; 8]) =
-            unsafe { std::mem::transmute(function) };
-        // SAFETY: the joiner is live and on the game thread (the caller), the strings are live, and the callback block
-        // holds a callable the game can copy, move, call and delete
-        unsafe { join(joiner, &raw const host_text, target.port, &raw const name_text, &raw mut callback) };
-        // SAFETY: both strings came from `GameStrings::heap_string` with this heap and are not used again; the join call copied
-        // them
-        unsafe {
-            host_text.release(&heap);
-            name_text.release(&heap);
-        }
-        true
-    }
-
-    // the game's own local world start, as the Play screen calls it: the result comes back at once. A null step of the
-    // chain to the starter gives no call
-    #[allow(unsafe_code)]
-    fn join_world(&self, target: &WorldTarget) -> Option<i32> {
-        let starter = self.world_starter()?;
-        let function = self.entries.get(HeadlessEntry::LOCAL_WORLD_STARTER_START_LOCAL_WORLD)?;
-        // an address of 0 is no function: never made into a function pointer
-        let function = usize::try_from(function).ok()?;
-        if function == 0 {
-            return None;
-        }
-        let heap = GameHeap::msvc()?;
-        let mut level_id = GameStrings::heap_string(&heap, &target.level_id)?;
-        // SAFETY: the entry is `World::StartLocalWorldResult World::LocalWorldStarter::startLocalWorld(const
-        // World::WorldID&)`: this in rcx, a pointer to the WorldID in rdx (one std::string at offset 0), and the
-        // 32-bit result enum in eax. The game only reads the id
-        let start: unsafe extern "C" fn(*mut c_void, *const MsvcString) -> u32 =
-            unsafe { std::mem::transmute(function) };
-        // SAFETY: the starter is live and on the game thread (the caller), and the id string is live
-        let result = unsafe { start(starter, &raw const level_id) };
-        // SAFETY: the string came from `GameStrings::heap_string` with this heap and is not used again; the call does not
-        // keep it
-        unsafe { level_id.release(&heap) };
-        Some(i32::from_ne_bytes(result.to_ne_bytes()))
+        self.codes.clear();
     }
 }

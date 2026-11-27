@@ -11,11 +11,6 @@ claim "Input" {
   full_block = true
 }
 
-claim "Overlay" {
-  mode   = "Shared"
-  reason = "Takes screenshots for the screenshot tool"
-}
-
 section "mcp" {
   title = "MCP"
 

@@ -89,7 +89,7 @@ impl<C: Clock> RunSupervisor<C> {
             }
             RunState::Live => {
                 self.ticks = self.ticks.saturating_add(1);
-                let frame = self.live.tick(view);
+                let frame = self.live.tick(view, now);
                 self.after_live_travel(view, frame)
             }
         }
@@ -290,7 +290,7 @@ impl<C: Clock> RunSupervisor<C> {
         match self.state {
             RunState::Running => self.advance_file(view, now),
             RunState::Live => {
-                let frame = self.live.advance_travel(view);
+                let frame = self.live.advance_travel(view, now);
                 self.after_live_travel(view, frame)
             }
             RunState::Idle => InputFrame::default(),
@@ -313,6 +313,7 @@ impl<C: Clock> RunSupervisor<C> {
         let Some(player) = self.player.as_mut() else {
             return InputFrame::default();
         };
+        player.set_now(now);
         let frame = player.tick(view);
         if let Some(outcome) = player.outcome() {
             let reason = match outcome {

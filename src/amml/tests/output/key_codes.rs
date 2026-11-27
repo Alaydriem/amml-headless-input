@@ -11,8 +11,16 @@ fn every_movement_and_hotbar_key_code_is_refused_as_a_press() {
     for key in InputKey::ALL {
         assert!(refused(KeyCodes::key(key)), "{key:?} should be refused");
     }
-    for slot in 1..=KeyCodes::HOTBAR_SLOTS {
-        let code = KeyCodes::hotbar(slot).expect("slots 1 to 9 have a key");
-        assert!(refused(code), "hotbar slot {slot} should be refused");
+    // the number keys of the hotbar stay refused: `hotbar` selects through the HUD
+    for code in 0x31..=0x39 {
+        assert!(refused(code), "number key {code:#x} should be refused");
     }
+}
+
+#[test]
+fn hotbar_slots_1_to_9_are_hud_slots_0_to_8() {
+    assert_eq!(KeyCodes::hotbar_index(1), Some(0));
+    assert_eq!(KeyCodes::hotbar_index(9), Some(8));
+    assert_eq!(KeyCodes::hotbar_index(0), None);
+    assert_eq!(KeyCodes::hotbar_index(10), None);
 }

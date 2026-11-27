@@ -1,4 +1,5 @@
-use amm_core::structs::input::{MoveIntent, PointerOp as ManagerPointerOp, TurnAxis};
+use amm_client::link::PointerOp as ManagerPointerOp;
+use amml_api::{Look, MoveIntent};
 use headless_input_core::control::{InputKey, PointerAction, TapKey};
 use headless_input_core::player::{InputFrame, KeySet, PointerOp};
 
@@ -7,8 +8,9 @@ use crate::output::{KeyCodes, LeaseHolder, MoveMode};
 use crate::traits::ManagerPort;
 
 // Sends an `InputFrame` to the manager as changes: the movement keys are sent as one move command when they change
-// (as fake keys to a manager without it), a button goes down or up only when the frame differs from what the mod holds, a hotbar slot and a pressed key are tapped (down on its frame, up on the next), a scroll turns
-// the wheel, and a rotation turns the look. The record holds only what the manager took, so `release_all` sends an up
+// (as fake keys to a loader without the move area), a button goes down or up only when the frame differs from what the
+// mod holds, a hotbar slot is selected through the game HUD, a pressed key is tapped (down on its frame, up on the
+// next), a scroll turns the wheel, and a rotation turns the look. The record holds only what the manager took, so `release_all` sends an up
 // for each thing still down. The look is turned through the manager as Turn actions: the output keeps the look it
 // commanded last and sends the difference to the wanted look. Nothing allocates
 pub struct InputOutput {
@@ -17,8 +19,6 @@ pub struct InputOutput {
     mode: MoveMode,
     attack: bool,
     use_item: bool,
-    // the hotbar key pressed on the last frame, let go on this one
-    hotbar: Option<u32>,
     // the pressed key's code from the last frame, let go on this one
     tap: Option<u32>,
     // the (yaw, pitch) the last turn commanded, in degrees; None before the first rotation of a step
@@ -26,22 +26,11 @@ pub struct InputOutput {
 }
 
 impl InputOutput {
-    // the most wheel notches the manager takes in one action; a longer scroll is sent in turns
-    pub const MAX_WHEEL_STEPS: i32 = 32;
     // the highest pitch either way: straight down or straight up
     pub const MAX_PITCH: f32 = 90.0;
-    const MILLIDEGREES: f32 = 1000.0;
 
     pub fn new() -> Self {
-        Self {
-            keys: KeySet::new(),
-            mode: MoveMode::Unknown,
-            attack: false,
-            use_item: false,
-            hotbar: None,
-            tap: None,
-            look: None,
-        }
+        Self { keys: KeySet::new(), mode: MoveMode::Unknown, attack: false, use_item: false, tap: None, look: None }
     }
 
     // the keys, the hotbar tap and the pointer events of one frame, then its rotation. On the first send the manager
@@ -74,13 +63,13 @@ impl InputOutput {
         wrapped - 180.0
     }
 
-    // the move cleared (or an up for every held movement key), then an up for the hotbar key, the pressed key and
+    // the move cleared (or an up for every held movement key), then an up for the pressed key and
     // every button; a refused up is dropped, so the record ends empty
     pub fn release_all(&mut self, port: &impl ManagerPort) {
         if !self.keys.is_empty() {
             match self.mode {
                 MoveMode::Command => {
-                    let _ = port.send_move(MoveIntent::ZERO);
+                    let _ = port.send_move(MoveIntent::default());
                 }
                 MoveMode::Keys | MoveMode::Unknown => {
                     for key in InputKey::ALL {
@@ -90,9 +79,6 @@ impl InputOutput {
                     }
                 }
             }
-        }
-        if let Some(vk) = self.hotbar {
-            let _ = port.send_key(vk, false);
         }
         if let Some(vk) = self.tap {
             let _ = port.send_key(vk, false);
@@ -117,8 +103,9 @@ impl InputOutput {
     }
 
     // the turn from the last commanded look (the read one at the first rotation) to the wanted look: the yaw by the
-    // short way, the pitch held to straight up and down. A frame with no rotation forgets the commanded look. The
-    // commanded look moves by what the manager took, in millidegrees, so a rounding step is sent on a later frame
+    // short way, the pitch held to straight up and down, as one turn in degrees. The game's angles and the turn use the
+    // same signs (positive yaw turns right seen from above, positive pitch looks down). A frame with no rotation
+    // forgets the commanded look
     fn send_rotation(
         &mut self,
         rotation: Option<(f32, f32)>,
@@ -132,24 +119,17 @@ impl InputOutput {
         if !yaw.is_finite() || !pitch.is_finite() || port.panel_open() {
             return Ok(());
         }
-        let Some((mut at_yaw, mut at_pitch)) = self.look.or(read) else {
+        let Some((at_yaw, at_pitch)) = self.look.or(read) else {
             return Ok(());
         };
         self.look = Some((at_yaw, at_pitch));
         let wanted_pitch = pitch.clamp(-Self::MAX_PITCH, Self::MAX_PITCH);
-        let yaw_step = (Self::wrap_degrees(yaw - at_yaw) * Self::MILLIDEGREES).round() as i32;
-        let pitch_step = ((wanted_pitch - at_pitch) * Self::MILLIDEGREES).round() as i32;
-        if yaw_step != 0 {
-            port.send_pointer(ManagerPointerOp::Turn { axis: TurnAxis::Yaw, millidegrees: yaw_step })?;
-            at_yaw = Self::wrap_degrees(at_yaw + yaw_step as f32 / Self::MILLIDEGREES);
-            self.look = Some((at_yaw, at_pitch));
+        let turn = Look { yaw: Self::wrap_degrees(yaw - at_yaw), pitch: wanted_pitch - at_pitch };
+        if turn.yaw == 0.0 && turn.pitch == 0.0 {
+            return Ok(());
         }
-        if pitch_step != 0 {
-            // the camera turns the pitch the other way from `mRot`: a positive turn delta lowers the read pitch
-            port.send_pointer(ManagerPointerOp::Turn { axis: TurnAxis::Pitch, millidegrees: -pitch_step })?;
-            at_pitch += pitch_step as f32 / Self::MILLIDEGREES;
-            self.look = Some((at_yaw, at_pitch));
-        }
+        port.send_pointer(ManagerPointerOp::Turn(turn))?;
+        self.look = Some((Self::wrap_degrees(at_yaw + turn.yaw), at_pitch + turn.pitch));
         Ok(())
     }
 
@@ -197,16 +177,12 @@ impl InputOutput {
         }
     }
 
-    fn send_hotbar(&mut self, slot: Option<u8>, port: &impl ManagerPort) -> Result<(), OutputError> {
-        if let Some(vk) = self.hotbar {
-            port.send_key(vk, false)?;
-            self.hotbar = None;
+    // slot 1 to 9 of the frame is HUD slot 0 to 8; any other slot is dropped
+    fn send_hotbar(&self, slot: Option<u8>, port: &impl ManagerPort) -> Result<(), OutputError> {
+        match slot.and_then(KeyCodes::hotbar_index) {
+            Some(index) => port.select_hotbar(index),
+            None => Ok(()),
         }
-        if let Some(vk) = slot.and_then(KeyCodes::hotbar) {
-            port.send_key(vk, true)?;
-            self.hotbar = Some(vk);
-        }
-        Ok(())
     }
 
     fn send_tap(&mut self, tap: Option<TapKey>, port: &impl ManagerPort) -> Result<(), OutputError> {
@@ -217,6 +193,7 @@ impl InputOutput {
         if let Some(key) = tap {
             port.send_key(key.vk(), true)?;
             self.tap = Some(key.vk());
+            curia::info!("key tap sent", { key: format!("{:#x}", key.vk()) });
         }
         Ok(())
     }
@@ -225,15 +202,8 @@ impl InputOutput {
         match op {
             PointerOp::Press(action) => self.send_button(action, true, port),
             PointerOp::Release(action) => self.send_button(action, false, port),
-            PointerOp::Scroll(steps) => {
-                let mut left = steps;
-                while left != 0 {
-                    let turn = left.clamp(-Self::MAX_WHEEL_STEPS, Self::MAX_WHEEL_STEPS);
-                    port.send_pointer(ManagerPointerOp::Wheel { steps: turn })?;
-                    left -= turn;
-                }
-                Ok(())
-            }
+            PointerOp::Scroll(0) => Ok(()),
+            PointerOp::Scroll(steps) => port.send_pointer(ManagerPointerOp::Wheel { notches: steps as f32 }),
         }
     }
 

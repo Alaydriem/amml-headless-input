@@ -35,7 +35,7 @@ impl RunHarness {
 
     pub fn with_manager(manager: FakeManager) -> Self {
         Self {
-            runtime: HeadlessRuntime::new(&RuntimeDirs::dirs()),
+            runtime: HeadlessRuntime::new(RuntimeDirs::folders()),
             manager,
             join: FakeJoinClient::in_world(),
             command: FakeCommandClient::new(),

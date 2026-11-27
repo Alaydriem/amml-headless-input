@@ -1,24 +1,22 @@
-use std::path::Path;
+use alaydriem_headless_input::errors::OutputError;
+use alaydriem_headless_input::services::{HeadlessDescriptor, HeadlessLink};
+use alaydriem_headless_input::traits::{ManagerPort, ScreenshotPort};
+use amm_client::test_support::{FakeConnection, FakeTable};
+use amml_api::MoveIntent;
+use amml_api::testing::FakeGame;
 
-use alaydriem_headless_input::errors::{LeaseError, OutputError};
-use alaydriem_headless_input::services::HeadlessLink;
-use alaydriem_headless_input::traits::ManagerPort;
-use amm_abi::types::AmmStatus;
-use amm_client::test_support::FakeTable;
-use amm_core::structs::descriptor::Capability;
-use amm_core::structs::event::ModEvent;
-use amm_core::structs::input::{MoveIntent, PointerButton, PointerOp};
-use amm_core::structs::lease::AcquireOutcome;
-use amm_core::structs::registry::ModIndex;
-
-fn link() -> HeadlessLink {
-    HeadlessLink::new(FakeTable::table(), Path::new(FakeTable::CONFIG_DIR)).unwrap()
+// a connected link and the fake loader it runs on; the link is dropped before the loader
+fn link(screenshots: bool) -> (FakeGame, HeadlessLink) {
+    let FakeConnection { link, game } = FakeTable::link_without_frame_with(HeadlessDescriptor::TEXT);
+    (game, HeadlessLink::new(link, screenshots))
 }
 
 #[test]
-fn reload_reads_a_changed_setting() {
+fn a_connected_link_reloads_a_changed_setting() {
     FakeTable::set_config("mcp {\n  enabled = false\n}\n");
-    let mut link = link();
+    let (_game, mut link) = link(true);
+    assert!(link.is_connected());
+    link.reload();
     assert!(!link.config().mcp_enabled);
 
     FakeTable::set_config("mcp {\n  enabled = true\n}\n");
@@ -28,113 +26,41 @@ fn reload_reads_a_changed_setting() {
 }
 
 #[test]
-fn a_drain_reads_at_most_the_per_tick_bound_and_defers_the_rest_in_order() {
-    let mut link = link();
-    let bound = HeadlessLink::MAX_EVENTS_PER_TICK;
-    let extra = 10;
-    let event = |index: usize| ModEvent::Key { vk: index as u32, down: true, repeat: false };
-    for index in 0..bound + extra {
-        FakeTable::push_event(event(index));
-    }
-
-    let first = link.drain().to_vec();
-    assert_eq!(first.len(), bound);
-    assert_eq!(first.first().copied(), Some(event(0)));
-    assert_eq!(first.last().copied(), Some(event(bound - 1)));
-
-    let second = link.drain().to_vec();
-    assert_eq!(second, (bound..bound + extra).map(event).collect::<Vec<_>>());
-    assert!(link.drain().is_empty());
-}
-
-#[test]
-fn a_denied_input_lease_names_the_holder() {
-    FakeTable::set_acquire_outcome(Capability::Input, AcquireOutcome::Denied { holder: ModIndex(2) });
-    FakeTable::with(|state| state.holder_id = Some("@alaydriem/dejavu"));
-    let link = link();
-
-    let refused = link.acquire_input();
-
-    assert_eq!(refused, Err(LeaseError::Refused { holder: "@alaydriem/dejavu".to_string() }));
-    assert_eq!(FakeTable::with(|state| state.acquired.clone()), vec![Capability::Input]);
-}
-
-#[test]
-fn a_preempting_input_lease_is_held() {
-    FakeTable::set_acquire_outcome(Capability::Input, AcquireOutcome::Preempted);
-    let link = link();
-
-    assert_eq!(link.acquire_input(), Ok(()));
-    link.release_input();
-    assert_eq!(FakeTable::with(|state| state.released.clone()), vec![Capability::Input]);
-}
-
-#[test]
 fn panel_open_is_the_manager_answer() {
-    let link = link();
+    let (_game, link) = link(true);
     assert!(!link.panel_open());
 
     FakeTable::with(|state| state.panel_open = true);
     assert!(link.panel_open());
-
-    FakeTable::with(|state| state.panel_open = false);
-    assert!(!link.panel_open());
 }
 
 #[test]
-fn a_send_the_manager_does_not_permit_is_refused_and_is_not_the_panel() {
-    let link = link();
-    FakeTable::with(|state| state.send_key_status = AmmStatus::NotPermitted);
+fn a_key_without_the_lease_is_refused_and_a_code_that_is_no_key_is_unsupported() {
+    let (_game, link) = link(true);
 
     assert_eq!(link.send_key(0x57, true), Err(OutputError::Refused));
-    assert!(!link.panel_open());
+    assert_eq!(link.send_key(0x1_0000, true), Err(OutputError::Unsupported));
+    assert_eq!(link.send_key(0, true), Err(OutputError::Unsupported));
 }
 
 #[test]
-fn a_full_pointer_queue_is_its_own_error() {
-    let link = link();
-    FakeTable::with(|state| state.send_pointer_status = AmmStatus::QueueFull);
+fn a_held_key_and_move_reach_the_loader_under_the_lease() {
+    let (game, link) = link(true);
+    assert_eq!(link.acquire_input(), Ok(()));
 
-    let full = link.send_pointer(PointerOp::Button { button: PointerButton::Left, down: true });
+    assert_eq!(link.send_key(0x45, true), Ok(()));
+    assert_eq!(link.send_move(MoveIntent { forward: 1.0, ..MoveIntent::default() }), Ok(()));
+    game.frame();
 
-    assert_eq!(full, Err(OutputError::QueueFull));
-    assert!(!link.panel_open());
+    let injected = game.injected();
+    assert!(injected.contains(&"key 0x45 down".to_string()), "{injected:?}");
+    assert!(injected.iter().any(|line| line.starts_with("move forward=1")), "{injected:?}");
 }
 
 #[test]
-fn the_manager_letting_go_of_the_fake_keys_is_not_the_panel() {
-    let mut link = link();
-    FakeTable::push_event(ModEvent::FakeKeysReleased);
+fn the_link_alone_selects_no_hotbar_slot_and_reports_the_loader_screenshot_support() {
+    let (_game, link) = link(false);
 
-    link.drain();
-
-    assert!(!link.panel_open());
-}
-
-#[test]
-fn a_key_down_before_the_controller_is_known_or_into_a_full_queue_has_its_own_error() {
-    let link = link();
-
-    FakeTable::with(|state| state.send_key_status = AmmStatus::NotReady);
-    assert_eq!(link.send_key(0x45, true), Err(OutputError::NotReady));
-
-    FakeTable::with(|state| state.send_key_status = AmmStatus::Busy);
-    assert_eq!(link.send_key(0x45, true), Err(OutputError::Busy));
-}
-
-#[test]
-fn a_move_with_no_local_player_is_not_ready() {
-    let link = link();
-    FakeTable::with(|state| state.send_move_status = AmmStatus::NotReady);
-
-    let intent = MoveIntent { forward: 1.0, ..MoveIntent::ZERO };
-    assert_eq!(link.send_move(intent), Err(OutputError::NotReady));
-}
-
-#[test]
-fn a_manager_without_the_move_command_answers_unsupported() {
-    let link = HeadlessLink::from_link(FakeTable::link_without_frame_on(FakeTable::api_minor_3())).unwrap();
-
-    let intent = MoveIntent { forward: 1.0, ..MoveIntent::ZERO };
-    assert_eq!(link.send_move(intent), Err(OutputError::Unsupported));
+    assert_eq!(link.select_hotbar(2), Err(OutputError::Unsupported));
+    assert!(!link.supports_screenshots());
 }

@@ -204,6 +204,16 @@ fn walk_until_dimension_to_a_named_dimension_ignores_other_changes() {
 }
 
 #[test]
+fn walk_until_dimension_to_a_named_dimension_ends_when_a_command_already_moved_the_player() {
+    let mut player =
+        player(vec![Step::WalkUntilDimension { dimension: Some(DimensionName::Nether), timeout: Ticks(600) }]);
+    let mut view = still();
+    view.dimension = Some(1);
+    assert!(player.tick(&view).keys.is_empty());
+    assert_eq!(player.outcome(), Some(StepOutcome::Done));
+}
+
+#[test]
 fn repeat_count_runs_the_block_n_times() {
     let mut player = player(vec![Step::Repeat {
         count: Some(3),
@@ -444,6 +454,46 @@ fn join_world_fails_when_the_menus_come_back() {
         }
         other => panic!("expected a failure, got {other:?}"),
     }
+}
+
+#[test]
+fn a_save_screen_after_the_leave_does_not_fail_the_join() {
+    let mut player = join_world_player();
+    let start = std::time::Instant::now();
+    player.set_now(start);
+    let mut view = still();
+    assert!(player.tick(&view).leave);
+    view.screen = ScreenKind::Title;
+    player.tick(&view);
+    view.screen = ScreenKind::Loading;
+    player.tick(&view);
+    view.screen = ScreenKind::Title;
+    for _ in 0..10 {
+        assert_eq!(player.tick(&view).join, world_request());
+    }
+    assert_eq!(player.outcome(), None);
+    view.screen = ScreenKind::InWorld;
+    player.tick(&view);
+    assert_eq!(player.current().step, 1);
+}
+
+#[test]
+fn with_a_clock_the_join_fails_once_the_menus_stay_for_the_grace() {
+    let mut player = join_world_player();
+    let start = std::time::Instant::now();
+    player.set_now(start);
+    let mut view = PlayerView { screen: ScreenKind::Title, ..still() };
+    player.tick(&view);
+    view.screen = ScreenKind::Loading;
+    player.tick(&view);
+    view.screen = ScreenKind::Title;
+    player.tick(&view);
+    player.set_now(start + StepPlayer::JOIN_MENUS_GRACE / 2);
+    player.tick(&view);
+    assert_eq!(player.outcome(), None);
+    player.set_now(start + StepPlayer::JOIN_MENUS_GRACE);
+    player.tick(&view);
+    assert!(matches!(player.outcome(), Some(StepOutcome::StepFailed { step: 0, .. })), "{:?}", player.outcome());
 }
 
 #[test]

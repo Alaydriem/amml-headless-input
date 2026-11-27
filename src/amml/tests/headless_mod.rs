@@ -1,5 +1,6 @@
 use alaydriem_headless_input::HeadlessMod;
-use amml_sdk::AmmlMod;
+use amm_client::link::LinkUses;
+use amml_api::AmmlMod;
 
 #[test]
 fn module_matches_namespace_and_name() {
@@ -10,53 +11,17 @@ fn module_matches_namespace_and_name() {
 }
 
 #[test]
-fn the_tick_hook_is_required() {
-    let required: Vec<_> = HeadlessMod::hooks().iter().filter(|h| h.required).map(|h| h.entry).collect();
-    assert_eq!(required, ["ClientInstance.update", "ClientInstance.onTick"]);
+fn the_uses_hold_every_row_the_manager_link_needs() {
+    assert!(LinkUses::check(&HeadlessMod::USES).is_ok());
 }
 
 #[test]
-fn amml_hcl_lists_exactly_the_hook_and_wanted_entries() {
-    let document: hcl::Value = hcl::from_str(include_str!("../amml.hcl")).unwrap();
-    let hcl::Value::Object(map) = document else { panic!("the document is not an object") };
-    let Some(hcl::Value::Array(listed)) = map.get("entries") else { panic!("no entries") };
-    let mut listed: Vec<&str> = listed.iter().filter_map(hcl::Value::as_str).collect();
-    assert_eq!(listed.first().copied(), Some("ClientInstance.update"));
-    let mut used: Vec<&str> = HeadlessMod::hooks().iter().map(|h| h.entry).collect();
-    used.extend(HeadlessMod::wanted().iter().map(|(id, _)| id.as_str()));
-    listed.sort_unstable();
-    used.sort_unstable();
-    assert_eq!(listed, used);
-    let mut expected = vec![
-        "ClientInstance.update",
-        "ClientInstance.onTick",
-        "ClientInstance.gameCallbacksOffset",
-        "ClientInstance.getLocalPlayer",
-        "ClientInstance.getTopScreenName",
-        "ClientInstance.vtable",
-        "Actor.stateVectorComponent",
-        "StateVectorComponent.mPos",
-        "Actor.actorRotationComponent",
-        "ActorRotationComponent.mRot",
-        "Actor.getDimension",
-        "Dimension.getDimensionId",
-        "ServerWorldJoiner.joinExternalServer",
-        "MinecraftGame.getWorldSystem",
-        "WorldSystem.mNetworkWorldJoiner",
-        "NetworkWorldJoiner.mServerWorldJoiner",
-        "ClientInstance.getMinecraftGame",
-        "MinecraftGame.isPrimaryClientInstanceReady",
-        "ClientInstance.requestLeaveGame",
-        "ClientInstance.getCurrentUIRouter",
-        "OreUIRouter.pushRoute",
-        "MinecraftPackets.createPacket",
-        "ClientInstance.getPacketSender",
-        "PacketSender.send",
-        "CommandRequestPacket.mCommand",
-        "CommandRequestPacket.size",
-        "LocalWorldStarter.startLocalWorld",
-        "WorldSystem.mLocalWorldStarter",
-    ];
-    expected.sort_unstable();
-    assert_eq!(listed, expected);
+fn every_row_of_the_uses_is_required() {
+    assert!(HeadlessMod::USES.rows().iter().all(|row| row.required != 0));
+}
+
+#[test]
+fn the_manifest_uses_block_is_the_uses_of_the_mod() {
+    let text = include_str!("../amml.hcl").replace("\r\n", "\n");
+    assert_eq!(HeadlessMod::USES.write_into(&text).replace("\r\n", "\n"), text);
 }

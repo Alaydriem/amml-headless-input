@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::join_phase::JoinPhase;
 use super::step_progress::StepProgress;
@@ -18,14 +19,31 @@ pub(crate) struct StepRun {
     join_asked: bool,
     // a join step saw a loading or other screen after it asked to join
     join_under_way: bool,
+    // the time of the frame being driven; None when no clock drives the step
+    now: Option<Instant>,
+    // when the title came back after the join got under way
+    menus_since: Option<Instant>,
 }
 
 impl StepRun {
     // the ticks walk_to turns toward its target before it walks
     pub const WALK_TURN_TICKS: u32 = 5;
+    // how long the menus must stay up after a join got under way before the join step fails: the save screen of a
+    // leave can show between two title frames, and the game's own join answer ends a failed join sooner. Without a
+    // clock the step fails at the first title frame
+    pub const JOIN_MENUS_GRACE: Duration = Duration::from_secs(10);
 
     pub fn new() -> Self {
-        Self { ticks: 0, plan: None, start_dimension: None, join: None, join_asked: false, join_under_way: false }
+        Self {
+            ticks: 0,
+            plan: None,
+            start_dimension: None,
+            join: None,
+            join_asked: false,
+            join_under_way: false,
+            now: None,
+            menus_since: None,
+        }
     }
 
     pub fn ticks(&self) -> u32 {
@@ -33,7 +51,12 @@ impl StepRun {
     }
 
     pub fn reset(&mut self) {
-        *self = Self::new();
+        *self = Self { now: self.now, ..Self::new() };
+    }
+
+    // the time of the next frames the step is driven on
+    pub fn set_now(&mut self, now: Instant) {
+        self.now = Some(now);
     }
 
     // the step is cut short: a held pointer is released
@@ -84,9 +107,11 @@ impl StepRun {
                 if self.start_dimension.is_none() {
                     self.start_dimension = view.dimension;
                 }
-                // only a known dimension that differs from the start ends the walk; a named walk also needs the target
-                let arrived = match (view.dimension, self.start_dimension) {
-                    (Some(now), Some(start)) if now != start => dimension.is_none_or(|name| now == name.id()),
+                // a named walk ends in its target dimension, also when a step before it (a command) moved the
+                // player there before this step's first tick; an unnamed walk ends on a change from the start
+                let arrived = match (view.dimension, self.start_dimension, dimension) {
+                    (Some(now), _, Some(name)) => now == name.id(),
+                    (Some(now), Some(start), None) => now != start,
                     _ => false,
                 };
                 if arrived {
@@ -138,10 +163,19 @@ impl StepRun {
             JoinPhase::Joining(target) => {
                 match view.screen {
                     ScreenKind::Title if self.join_under_way => {
-                        return StepProgress::Failed("the join failed: the game returned to the menus");
+                        let expired = self.now.is_none_or(|now| {
+                            now.saturating_duration_since(*self.menus_since.get_or_insert(now))
+                                >= Self::JOIN_MENUS_GRACE
+                        });
+                        if expired {
+                            return StepProgress::Failed("the join failed: the game returned to the menus");
+                        }
                     }
                     ScreenKind::Title => self.join_asked = true,
-                    ScreenKind::Loading | ScreenKind::Other(_) if self.join_asked => self.join_under_way = true,
+                    ScreenKind::Loading | ScreenKind::Other(_) if self.join_asked => {
+                        self.join_under_way = true;
+                        self.menus_since = None;
+                    }
                     _ => {}
                 }
                 frame.join = Some(Arc::clone(target));

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use headless_input_core::control::{ControlFile, DimensionName, InputKey, PointerAction, Step, TapKey, Ticks};
 use headless_input_core::errors::Refusal;
-use headless_input_core::player::{InputFrame, KeySet, PlayerView, PointerOp, ScreenKind};
+use headless_input_core::player::{InputFrame, KeySet, PlayerView, PointerOp, ScreenKind, StepPlayer};
 use headless_input_core::run::{
     Command, EndReason, FrameOutcome, LiveAction, RunDefaults, RunState, RunSupervisor, TapQueue,
 };
@@ -97,10 +97,12 @@ fn a_live_join_is_not_ended_by_the_idle_timer() {
 
 #[test]
 fn a_join_that_returns_to_the_menus_after_loading_fails() {
-    let (mut sup, _clock) = supervisor();
+    let (mut sup, clock) = supervisor();
     sup.apply(file(vec![join(600), walk(10)])).expect("the run starts");
     assert!(sup.on_frame(&title(), false, false).frame.expect("a frame-built input").join.is_some());
     assert!(sup.on_frame(&loading(), false, false).frame.expect("a frame-built input").join.is_some());
+    assert_eq!(end(&mut sup, &title(), false, false), None);
+    clock.advance(StepPlayer::JOIN_MENUS_GRACE);
     match end(&mut sup, &title(), false, false) {
         Some(EndReason::Failed { step, why, .. }) => {
             assert_eq!(step, Some(0));
@@ -112,10 +114,12 @@ fn a_join_that_returns_to_the_menus_after_loading_fails() {
 
 #[test]
 fn a_live_join_that_returns_to_the_menus_after_loading_fails() {
-    let (mut sup, _clock) = supervisor();
+    let (mut sup, clock) = supervisor();
     sup.apply(Command::Live(live_join(1200))).expect("the session starts");
     sup.on_frame(&title(), false, false);
     sup.on_frame(&loading(), false, false);
+    assert_eq!(end(&mut sup, &title(), false, false), None);
+    clock.advance(StepPlayer::JOIN_MENUS_GRACE);
     match end(&mut sup, &title(), false, false) {
         Some(EndReason::Failed { why, .. }) => assert_eq!(why, "the join failed: the game returned to the menus"),
         other => panic!("expected a failure, got {other:?}"),

@@ -3,6 +3,7 @@ use crate::control::{InputKey, Step, Ticks};
 use crate::player::step_progress::StepProgress;
 use crate::player::step_run::StepRun;
 use crate::player::{InputFrame, PlayerView, PointerOp, PointerOps};
+use std::time::Instant;
 
 // The input of a live session. Held keys, a turn, a pointer hold and a join or leave each have a slot and run at the
 // same time; a new action of one kind replaces the old one of that kind.
@@ -95,7 +96,7 @@ impl LiveSession {
         }
     }
 
-    pub fn tick(&mut self, view: &PlayerView) -> InputFrame {
+    pub fn tick(&mut self, view: &PlayerView, now: Instant) -> InputFrame {
         let mut frame = InputFrame::default();
         for (left, key) in self.keys.iter_mut().zip(InputKey::ALL) {
             if *left > 0 {
@@ -114,15 +115,15 @@ impl LiveSession {
         self.tapped_last = frame.tap.is_some();
         Self::drive(&mut self.rotation, view, &mut frame);
         Self::drive(&mut self.pointer, view, &mut frame);
-        self.drive_travel(view, &mut frame);
+        self.drive_travel(view, now, &mut frame);
         frame
     }
 
     // one step of the join or leave alone, for a frame with no game tick; held keys, turns and the pointer wait for
     // the next tick
-    pub fn advance_travel(&mut self, view: &PlayerView) -> InputFrame {
+    pub fn advance_travel(&mut self, view: &PlayerView, now: Instant) -> InputFrame {
         let mut frame = InputFrame::default();
-        self.drive_travel(view, &mut frame);
+        self.drive_travel(view, now, &mut frame);
         frame
     }
 
@@ -136,8 +137,9 @@ impl LiveSession {
         self.failure.take()
     }
 
-    fn drive_travel(&mut self, view: &PlayerView, frame: &mut InputFrame) {
+    fn drive_travel(&mut self, view: &PlayerView, now: Instant, frame: &mut InputFrame) {
         if let Some((step, run)) = &mut self.travel {
+            run.set_now(now);
             match run.drive(step, view, frame) {
                 StepProgress::Running => {}
                 StepProgress::Failed(why) => {

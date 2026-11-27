@@ -2,7 +2,6 @@ mod command_inbox;
 mod descriptor;
 mod headless_link;
 mod headless_runtime;
-mod hook_installer;
 mod hub_control;
 mod last_view;
 mod local_port;
